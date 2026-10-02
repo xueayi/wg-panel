@@ -1,0 +1,25 @@
+# 不打进镜像的东西：缓存、依赖、本地数据、密钥、git 历史
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.pytest_cache/
+.mypy_cache/
+.git/
+.gitignore
+.githooks/
+
+frontend/node_modules/
+frontend/dist/
+
+# 本地运行产生的数据与凭证（仓库里本来就有 .gitignore 兜底，这里是镜像的第二道门）
+data/
+backend/data/
+ssh/
+*.db
+*.sqlite3
+.env
+docker-compose.yml
+*.key
+*.pem
+id_ed25519*
+id_rsa*
