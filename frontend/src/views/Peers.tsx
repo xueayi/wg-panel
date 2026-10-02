@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, humanBytes, Peer } from '../api'
-import { Badge, Button, Card, CardHeader, Dot, Empty, Field, Modal, inputClass } from '../components/ui'
+import { api, humanBytes, IpPool, Peer } from '../api'
+import { Badge, Button, Card, CardHeader, Dot, Empty, Field, Hint, Modal, inputClass } from '../components/ui'
 
 const TUNNEL_LABEL: Record<string, string> = {
   lan: '局域网',
@@ -8,12 +8,29 @@ const TUNNEL_LABEL: Record<string, string> = {
   custom: '自定义',
 }
 
+/** 隧道模式随选项变化的说明（让用户看清每种模式到底会发生什么）。 */
+const TUNNEL_INFO: Record<string, { title: string; desc: string; example?: string }> = {
+  lan: {
+    title: '局域网（推荐，不影响手机其它网络）',
+    desc: '只把 VPN 内网（如 10.8.1.0/24）和你在「中转节点」里设的转发网段走隧道。手机上其它流量（刷网页、别的 App）仍然走它自己的蜂窝 / WiFi，完全不受影响——想「只接入家里网络、不改动其它网络」就选它。',
+  },
+  full: {
+    title: '全局（所有流量都经节点）',
+    desc: '所有流量（含上网）都经中转节点转发，等于把手机整体「搬」到家里出口：既能访问家里设备，连外网也走家里。缺点是耗节点带宽、速度受节点上行限制；人在外地时外网 IP 也会变成家里的。',
+    example: 'AllowedIPs = 0.0.0.0/0 + ::/0',
+  },
+  custom: {
+    title: '自定义（手填网段，最精细）',
+    desc: '只放行你手填的网段。比如只想访问家里路由器背后的那台 NAS：填 192.168.1.0/24。需要你清楚到底要通哪些段——否则会连不通。',
+  },
+}
+
 function stateTone(p: Peer): 'green' | 'slate' | 'amber' {
   if (p.disabled) return 'amber'
   return p.state === '在线' ? 'green' : 'slate'
 }
 
-export default function Peers({ onToast }: { onToast: (m: string, tone?: 'ok' | 'err') => void }) {
+export default function Peers({ onToast, nonce }: { onToast: (m: string, tone?: 'ok' | 'err') => void; nonce: number }) {
   const [rows, setRows] = useState<Peer[]>([])
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
@@ -35,6 +52,11 @@ export default function Peers({ onToast }: { onToast: (m: string, tone?: 'ok' | 
   useEffect(() => {
     load()
   }, [])
+
+  // 顶栏全局刷新：nonce 变化时重新拉列表（挂载时的 0 不触发）
+  useEffect(() => {
+    if (nonce) load()
+  }, [nonce])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -195,6 +217,8 @@ function CreateModal({
   const [ip, setIp] = useState('')
   const [net, setNet] = useState('')
   const [nets, setNets] = useState<string[]>([])
+  const [pool, setPool] = useState<IpPool | null>(null)
+  const [allowedIps, setAllowedIps] = useState('')
   const [siteRoutes, setSiteRoutes] = useState('')
   const [note, setNote] = useState('')
   const [dns, setDns] = useState('')
@@ -202,14 +226,19 @@ function CreateModal({
 
   useEffect(() => {
     if (!open) return
-    api
-      .server()
-      .then((s) => {
+    Promise.all([api.server(), api.ipPool()])
+      .then(([s, p]) => {
         const list = [s.interface.address?.replace(/\d+\/(\d+)$/, '0/$1') || '', ...(s.extra_networks || [])]
         setNets(list.filter(Boolean))
+        setPool(p)
       })
-      .catch(() => setNets([]))
+      .catch(() => {
+        setNets([])
+        setPool(null)
+      })
   }, [open])
+
+  const segments = pool?.networks?.length ? pool.networks : pool ? [pool] : []
 
   const submit = async () => {
     if (!name.trim()) return onToast('先填个客户端名', 'err')
@@ -217,8 +246,9 @@ function CreateModal({
     try {
       const body: Record<string, unknown> = { name: name.trim(), tunnel }
       if (ip.trim()) body.ip = ip.trim()
-      if (siteRoutes.trim()) body.site_routes = siteRoutes.trim()
       if (net.trim()) body.net = net.trim()
+      if (tunnel === 'custom' && allowedIps.trim()) body.allowed_ips = allowedIps.trim()
+      if (siteRoutes.trim()) body.site_routes = siteRoutes.trim()
       if (note.trim()) body.note = note.trim()
       if (dns.trim()) body.dns = dns.trim()
       const p = await api.createPeer(body)
@@ -226,6 +256,9 @@ function CreateModal({
       onCreated({ ...p, conf_text: undefined })
       setName('')
       setIp('')
+      setNet('')
+      setAllowedIps('')
+      setSiteRoutes('')
       setNote('')
       setDns('')
     } catch (e) {
@@ -253,12 +286,19 @@ function CreateModal({
         <Field label="名称" hint="字母数字与 . _ -，1–32 字符。建议按设备命名，如 iphone15、mac-mini">
           <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} placeholder="iphone15" />
         </Field>
-        <Field label="隧道模式">
+        <Field
+          label={
+            <span className="inline-flex items-center gap-1.5">
+              隧道模式
+              <Hint text="决定这个客户端走隧道的是哪些流量。局域网最省事、且不影响手机上其它网络；全局把所有流量都兜进 VPN；自定义由你手填要通的网段。" />
+            </span>
+          }
+        >
           <div className="grid grid-cols-3 gap-2">
             {[
               { v: 'lan', t: '局域网', d: '只走内网' },
               { v: 'full', t: '全局', d: '全部流量' },
-              { v: 'custom', t: '自定义', d: '手工网段' },
+              { v: 'custom', t: '自定义', d: '手填网段' },
             ].map((o) => (
               <button
                 key={o.v}
@@ -275,6 +315,28 @@ function CreateModal({
             ))}
           </div>
         </Field>
+        <div className="rounded-lg bg-slate-50 px-3 py-2.5 text-[12px] leading-relaxed text-slate-600">
+          <div className="mb-1 font-medium text-slate-700">{TUNNEL_INFO[tunnel].title}</div>
+          <div>{TUNNEL_INFO[tunnel].desc}</div>
+          {TUNNEL_INFO[tunnel].example && (
+            <code className="mt-1.5 block rounded bg-slate-900/90 px-2 py-1 font-mono text-[11px] text-slate-100">
+              {TUNNEL_INFO[tunnel].example}
+            </code>
+          )}
+        </div>
+        {tunnel === 'custom' && (
+          <Field
+            label="自定义 AllowedIPs（CIDR）"
+            hint="逗号分隔，例如 192.168.1.0/24, 10.8.1.0/24。自定义模式必填，否则无法创建。"
+          >
+            <input
+              className={inputClass}
+              value={allowedIps}
+              onChange={(e) => setAllowedIps(e.target.value)}
+              placeholder="192.168.1.0/24"
+            />
+          </Field>
+        )}
         {nets.length > 1 && (
           <Field label="从哪个虚拟网段分配" hint="多个网段时指定；不选则自动落到第一个有空位的段">
             <select className={inputClass} value={net} onChange={(e) => setNet(e.target.value)}>
@@ -287,8 +349,55 @@ function CreateModal({
             </select>
           </Field>
         )}
+        {segments.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-[13px] font-medium text-slate-700">虚拟 IP 池（点空格选一个，或手动填下方）</div>
+            <div className="max-h-52 space-y-3 overflow-y-auto rounded-lg border border-slate-100 p-3">
+              {segments.map((seg, idx) => {
+                const base = seg.network.split('/')[0].split('.').slice(0, 3).join('.')
+                const segUsed = new Set(seg.used.map((u) => u.ip))
+                return (
+                  <div key={seg.network}>
+                    <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px]">
+                      <span className="font-medium text-slate-700">{seg.network}</span>
+                      <span className="text-slate-400">已用 {seg.used_count} · 空闲 {seg.free_count}</span>
+                      {idx === 0 && <Badge tone="indigo">主网段</Badge>}
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {Array.from({ length: 253 }, (_, i) => {
+                        const addr = `${base}.${i + 2}`
+                        const owner = seg.used.find((u) => u.ip === addr)
+                        const selected = ip === addr
+                        return (
+                          <button
+                            key={addr}
+                            type="button"
+                            title={owner ? `${addr} · ${owner.name}` : `${addr} 空闲`}
+                            disabled={!!owner}
+                            onClick={() => {
+                              setIp(addr)
+                              if (idx > 0) setNet(seg.network)
+                            }}
+                            className={`h-3.5 w-3.5 rounded-[3px] transition ${
+                              owner ? 'cursor-default bg-indigo-500' : 'cursor-pointer bg-slate-100 hover:bg-indigo-300'
+                            } ${selected ? 'ring-2 ring-emerald-500' : ''}`}
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="flex items-center gap-3 text-[12px] text-slate-500">
+              <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-[3px] bg-indigo-500" />已分配</span>
+              <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-[3px] bg-slate-100" />空闲（可点）</span>
+              <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-[3px] bg-slate-100 ring-2 ring-emerald-500" />已选</span>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
-          <Field label="虚拟 IP（可选）" hint="留空自动分配最小空闲地址">
+          <Field label="虚拟 IP（可选）" hint="留空自动分配最小空闲地址；也可点上方格子选">
             <input className={inputClass} value={ip} onChange={(e) => setIp(e.target.value)} placeholder="10.8.1.20" />
           </Field>
           <Field label="DNS（可选）">

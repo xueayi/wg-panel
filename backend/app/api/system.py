@@ -166,7 +166,7 @@ def adopt(request: Request, confirm: bool = Query(False), _: str = Depends(curre
                             detail="纳管会重写 wg0.conf（先自动备份），需要 confirm=true")
     out = agent_call(get_executor(), ["adopt", "--yes"], action="system.adopt",
                      confirmed=True, store=_store(request))
-    _store(request).audit("system.adopt", "", "ok", "纳管既有配置")
+    _store(request).audit("system.adopt", "", "ok", "接管已有配置")
     return out
 
 

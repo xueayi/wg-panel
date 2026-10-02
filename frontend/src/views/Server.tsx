@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, IpPool, Peer, ServerInfo } from '../api'
 import { Badge, Button, Card, CardHeader, Empty, Field, Hint, inputClass } from '../components/ui'
 
-export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' | 'err') => void }) {
+export default function Server({ onToast, nonce }: { onToast: (m: string, tone?: 'ok' | 'err') => void; nonce: number }) {
   const [info, setInfo] = useState<ServerInfo | null>(null)
   const [pool, setPool] = useState<IpPool | null>(null)
   const [peerRows, setPeerRows] = useState<Peer[]>([])
@@ -33,6 +33,11 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
   useEffect(() => {
     load()
   }, [])
+
+  // 顶栏全局刷新：nonce 变化时重新拉数据（挂载时的 0 不触发）
+  useEffect(() => {
+    if (nonce) load()
+  }, [nonce])
 
   const save = async () => {
     setBusy(true)
@@ -110,10 +115,10 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
       <Card>
         <CardHeader
           title="站点互联"
-          desc="这些节点本身是网关，背后各挂着一个局域网。中转节点靠这些网段知道「包该转给谁」。"
+          desc="有些客户端本身就是网关（比如家里/公司的路由器），它们背后还带着一个内网。把这些内网段并入 VPN，设备之间就能跨站点互访。"
           action={
             <span className="inline-flex items-center gap-1">
-            <Hint text="把所有站点背后的局域网网段，加进每个客户端的 AllowedIPs 并重新下发配置。加了一个带内网的节点后点它，其它设备才能访问那个内网。会先自动备份。" />
+            <Hint text="把各个站点背后的局域网网段，一次性写进所有客户端的 AllowedIPs 并重新生成配置。例如站点 A（家里路由器）背后是 192.168.1.0/24、站点 B（公司）背后是 10.0.0.0/24——点它之后，两边的手机/电脑就能互相访问对方的内网。改前会自动备份。注意：被访问那一侧的网关要开着内核转发与 NAT 伪装才能真正通。" />
             <Button
               variant="primary"
               disabled={!siteNodes.length}
@@ -154,8 +159,8 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
               ))}
             </ul>
             <p className="mt-3 text-[12px] leading-relaxed text-slate-400">
-              新加站点后要让他们互相访问，得让每个客户端的配置里都包含对方的网段——
-              点右上角一次性并入并重签。被访问侧的网关还要开内核转发与 NAT 伪装。
+              每新增一个带内网的站点，点一次右上角这个按钮，所有设备的配置就会被更新、能访问对方的内网（改前自动备份）。
+              注意：被访问那一侧的网关仍需开启内核转发与 NAT 伪装，否则内网进不去。
             </p>
           </div>
         )}

@@ -486,7 +486,7 @@ def cmd_doctor(args):
     if iface.get("SaveConfig", "false").lower() == "true":
         problems.append(_issue(
             "saveconfig-true", "SaveConfig = true：wg-quick 会把运行时快照写回配置，导致注释/顺序丢失、配置漂移",
-            fix="adopt", hint="点「纳管既有配置」会改成 false 并按登记表重渲染（写前自动备份）"))
+            fix="adopt", hint="点「接管已有配置」会改成 false 并按登记表重渲染（写前自动备份）"))
     if not CONF.exists():
         problems.append(_issue(
             "conf-missing", f"配置文件缺失：{CONF}",
@@ -513,7 +513,7 @@ def cmd_doctor(args):
         if not r["in_registry"]:
             warns.append(_issue(
                 "not-adopted", f"{r['name']}：配置文件里有 peer 但登记表没有",
-                fix="adopt", target=r["name"], hint="点「纳管既有配置」把它收进登记表"))
+                fix="adopt", target=r["name"], hint="点「接管已有配置」把它收进登记表"))
         if r["in_live"] and not r["in_conf"]:
             warns.append(_issue(
                 "runtime-only", f"{r['name']}：只存在于运行时，重启即丢",

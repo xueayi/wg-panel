@@ -75,9 +75,11 @@ function toIssue(x: DoctorIssue | string): DoctorIssue {
 export default function Dashboard({
   onToast,
   onGoPeers,
+  nonce,
 }: {
   onToast: (m: string, tone?: 'ok' | 'err') => void
   onGoPeers: () => void
+  nonce: number
 }) {
   const [status, setStatus] = useState<Status | null>(null)
   const [server, setServer] = useState<ServerInfo | null>(null)
@@ -98,6 +100,11 @@ export default function Dashboard({
   }
 
   useEffect(load, [])
+
+  // 顶栏全局刷新：nonce 变化时重新拉数据（挂载时的 0 不触发，避免重复加载）
+  useEffect(() => {
+    if (nonce) load()
+  }, [nonce])
 
   const healthy = problems.length === 0
 

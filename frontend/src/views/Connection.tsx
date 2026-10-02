@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, ConnSettings } from '../api'
 import { Badge, Button, Card, CardHeader, Field, Hint, inputClass } from '../components/ui'
 
-export default function Connection({ onToast }: { onToast: (m: string, tone?: 'ok' | 'err') => void }) {
+export default function Connection({ onToast, nonce }: { onToast: (m: string, tone?: 'ok' | 'err') => void; nonce: number }) {
   const [cur, setCur] = useState<ConnSettings | null>(null)
   const [host, setHost] = useState('')
   const [port, setPort] = useState('22')
@@ -43,6 +43,11 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
   useEffect(() => {
     load()
   }, [])
+
+  // 顶栏全局刷新：nonce 变化时重新拉连接设置（挂载时的 0 不触发）
+  useEffect(() => {
+    if (nonce) load()
+  }, [nonce])
 
   const save = async () => {
     setBusy('save')
@@ -258,7 +263,7 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
           </div>
           <Field label="粘贴私钥以替换（可选）" hint="整段粘进来即可；提交后立即以 600 落盘，接口不回显。">
             <textarea
-              className={`${inputClass} h-24 font-mono text-[12px]`}
+              className={`${inputClass} h-24 font-mono text-[12px] placeholder:font-sans`}
               value={keyText}
               onChange={(e) => setKeyText(e.target.value)}
               placeholder="把私钥文件内容整段粘到这里（以 BEGIN 开头的那段）"

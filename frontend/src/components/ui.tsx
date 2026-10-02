@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 export function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
@@ -74,14 +74,25 @@ export function Dot({ tone }: { tone: 'green' | 'slate' | 'amber' }) {
 }
 
 /** 悬浮问号：把「这个按钮到底干嘛的」写在旁边，不占版面。
- *  气泡用 portal 挂到 body 上——否则会被内容区的 overflow 裁掉、或被顶栏盖住。 */
+ *  气泡用 portal 挂到 body 上——否则会被内容区的 overflow 裁掉、或被顶栏盖住。
+ *  上方空间不够（贴近页面顶部时）就翻到下方，避免被浏览器顶栏/视口裁掉。 */
 export function Hint({ text }: { text: string }) {
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  const [pos, setPos] = useState<{ x: number; y: number; below: boolean } | null>(null)
+  const tipRef = useRef<HTMLSpanElement>(null)
 
   const show = (el: HTMLElement) => {
     const r = el.getBoundingClientRect()
-    setPos({ x: r.left + r.width / 2, y: r.top })
+    setPos({ x: r.left + r.width / 2, y: r.top, below: false })
   }
+
+  useLayoutEffect(() => {
+    if (!pos || !tipRef.current) return
+    const h = tipRef.current.offsetHeight
+    // 上方放不下（气泡会被页面顶部裁掉）就翻到问号下方
+    if (pos.y - 10 - h < 8 && !pos.below) {
+      setPos((p) => (p ? { ...p, below: true } : p))
+    }
+  }, [pos])
 
   return (
     <>
@@ -98,8 +109,11 @@ export function Hint({ text }: { text: string }) {
       {pos &&
         createPortal(
           <span
-            style={{ left: pos.x, top: Math.max(pos.y - 10, 8) }}
-            className="pointer-events-none fixed z-[100] w-64 -translate-x-1/2 -translate-y-full rounded-lg bg-slate-900/95 px-3 py-2 text-[12px] font-normal leading-relaxed text-white shadow-pop"
+            ref={tipRef}
+            style={{ left: pos.x, top: pos.below ? pos.y + 18 : Math.max(pos.y - 10, 8) }}
+            className={`pointer-events-none fixed z-[100] w-64 -translate-x-1/2 rounded-lg bg-slate-900/95 px-3 py-2 text-[12px] font-normal leading-relaxed text-white shadow-pop ${
+              pos.below ? '' : '-translate-y-full'
+            }`}
           >
             {text}
           </span>,
@@ -114,7 +128,7 @@ export function Field({
   hint,
   children,
 }: {
-  label: string
+  label: React.ReactNode
   hint?: string
   children: React.ReactNode
 }) {

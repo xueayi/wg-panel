@@ -106,8 +106,17 @@ export default function App() {
   const [readOnly, setReadOnly] = useState(false)
   const [mustChange, setMustChange] = useState(false)
   const [username, setUsername] = useState('admin')
+  const [refreshNonce, setRefreshNonce] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
 
   const say = (msg: string, tone: 'ok' | 'err' = 'ok') => setToast({ msg, tone })
+
+  /** 顶部全局刷新：让当前激活的视图重新拉一次数据。 */
+  const refresh = () => {
+    setRefreshing(true)
+    setRefreshNonce((n) => n + 1)
+    setTimeout(() => setRefreshing(false), 800)
+  }
 
   const check = async () => {
     try {
@@ -172,6 +181,24 @@ export default function App() {
             </svg>
             GitHub
           </a>
+          <Button size="sm" onClick={refresh} title="刷新当前页面数据" aria-label="刷新">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+              className={refreshing ? 'animate-spin' : ''}
+            >
+              <path d="M21 12a9 9 0 11-2.64-6.36" />
+              <path d="M21 3v6h-6" />
+            </svg>
+            刷新
+          </Button>
           <span className="hidden text-[13px] text-slate-400 sm:inline">{username}</span>
           <Button
             size="sm"
@@ -218,11 +245,11 @@ export default function App() {
         <main className="min-w-0 flex-1 overflow-y-auto px-5 py-5">
           <div className="mx-auto max-w-6xl">
             <ErrorBoundary>
-              {tab === 'overview' && <Dashboard onToast={say} onGoPeers={() => setTab('peers')} />}
-              {tab === 'peers' && <Peers onToast={say} />}
-              {tab === 'server' && <Server onToast={say} />}
-              {tab === 'connection' && <Connection onToast={say} />}
-              {tab === 'system' && <System onToast={say} />}
+              {tab === 'overview' && <Dashboard onToast={say} onGoPeers={() => setTab('peers')} nonce={refreshNonce} />}
+              {tab === 'peers' && <Peers onToast={say} nonce={refreshNonce} />}
+              {tab === 'server' && <Server onToast={say} nonce={refreshNonce} />}
+              {tab === 'connection' && <Connection onToast={say} nonce={refreshNonce} />}
+              {tab === 'system' && <System onToast={say} nonce={refreshNonce} />}
             </ErrorBoundary>
           </div>
         </main>

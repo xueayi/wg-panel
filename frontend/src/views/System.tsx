@@ -13,7 +13,7 @@ const ACTION_LABEL: Record<string, string> = {
   'server.update': '改中转节点参数',
   'server.set_endpoint': '改 Endpoint',
   'server.set_lan': '改转发网段',
-  'system.adopt': '纳管既有配置',
+  'system.adopt': '接管已有配置',
   'system.restore': '回滚配置',
   'system.refresh': '重连节点',
   'auth.login': '登录',
@@ -26,7 +26,7 @@ function time(ts: number) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
-export default function System({ onToast }: { onToast: (m: string, tone?: 'ok' | 'err') => void }) {
+export default function System({ onToast, nonce }: { onToast: (m: string, tone?: 'ok' | 'err') => void; nonce: number }) {
   const [status, setStatus] = useState<Status | null>(null)
   const [backups, setBackups] = useState<Backup[]>([])
   const [audit, setAudit] = useState<AuditRow[]>([])
@@ -46,6 +46,11 @@ export default function System({ onToast }: { onToast: (m: string, tone?: 'ok' |
     load()
   }, [])
 
+  // 顶栏全局刷新：nonce 变化时重新拉数据（挂载时的 0 不触发）
+  useEffect(() => {
+    if (nonce) load()
+  }, [nonce])
+
   const restore = async (b: Backup) => {
     if (!confirm(`用 ${b.name} 覆盖现网配置？\n\n覆盖前会自动再备份一份当前的，可再回滚。`)) return
     try {
@@ -58,11 +63,11 @@ export default function System({ onToast }: { onToast: (m: string, tone?: 'ok' |
   }
 
   const adopt = async () => {
-    if (!confirm('纳管既有的 wg0.conf：把现网 peer 收进登记表并重写配置（会先自动备份）。\n\n幂等操作，可重复执行。继续？'))
+    if (!confirm('接管既有的 wg0.conf：把现网 peer 收进登记表并重写配置（会先自动备份）。\n\n幂等操作，可重复执行。继续？'))
       return
     try {
       await api.adopt()
-      onToast('已纳管既有配置')
+      onToast('已接管已有配置')
       load()
     } catch (e) {
       onToast((e as Error).message, 'err')
@@ -97,8 +102,8 @@ export default function System({ onToast }: { onToast: (m: string, tone?: 'ok' |
                 <Hint text="重新建立 SSH 连接，并把面板内核脚本（wgagent.py）重新传到节点上——升级面板之后点它，让节点上的脚本跟面板一致。只读，不改任何 VPN 配置。" />
               </span>
               <span className="inline-flex items-center gap-1">
-                <Button onClick={adopt}>纳管既有配置</Button>
-                <Hint text="把节点上现有的 wg0.conf 里的 peer 收进面板的登记表，之后配置由面板统一管理。会先自动备份，再把 SaveConfig 改成 false 并重渲染配置（不断线）。幂等，可重复执行。" />
+                <Button onClick={adopt}>接管已有配置</Button>
+                <Hint text="接管节点上现有的 wg0.conf 里的 peer 收进面板的登记表，之后配置由面板统一管理。会先自动备份，再把 SaveConfig 改成 false 并重渲染配置（不断线）。幂等，可重复执行。" />
               </span>
             </div>
           }
