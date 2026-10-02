@@ -40,6 +40,21 @@ class Settings:
         self.secret_key: str = _env("WGP_SECRET_KEY", "")
         self.session_hours: int = int(_env("WGP_SESSION_HOURS", "12") or 12)
 
+    # 面板上可改的字段（白名单，避免把任意属性暴露成可写）
+    TUNABLE = {
+        "driver", "read_only", "iface", "ssh_host", "ssh_user", "ssh_port",
+        "ssh_key", "ssh_remote_tool", "ssh_timeout", "known_hosts", "agent_path",
+    }
+
+    def apply(self, data: dict) -> None:
+        """用面板里存下来的值覆盖 env 默认值（类型已在 API 层转好）。"""
+        for k, v in (data or {}).items():
+            if k in self.TUNABLE and v is not None:
+                setattr(self, k, v)
+
+    def snapshot(self) -> dict:
+        return {k: getattr(self, k) for k in sorted(self.TUNABLE)}
+
     def validate(self) -> list[str]:
         """启动自检：只报告问题，不抛异常（面板要能起来告诉你哪里错了）。"""
         problems = []

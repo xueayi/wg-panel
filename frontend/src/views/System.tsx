@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, AuditRow, Backup, Status } from '../api'
-import { Badge, Button, Card, CardHeader, Empty } from '../components/ui'
+import { Badge, Button, Card, CardHeader, Empty, Hint } from '../components/ui'
 
 const ACTION_LABEL: Record<string, string> = {
   'peer.add': '新增客户端',
@@ -83,12 +83,23 @@ export default function System({ onToast }: { onToast: (m: string, tone?: 'ok' |
     <div className="space-y-5">
       <Card>
         <CardHeader
-          title="连接"
-          desc="面板只发指令，不承载流量。升级面板后可用「重连」重新下发内核脚本。"
+          title={
+            <span className="inline-flex items-center gap-1.5">
+              连接
+              <Hint text="面板只发指令、不承载流量。隧道永远是 客户端 ↔ 中转节点。" />
+            </span>
+          }
+          desc="节点地址与私钥在「连接设置」里改。"
           action={
-            <div className="flex gap-2">
-              <Button onClick={refresh}>重连并下发</Button>
-              <Button onClick={adopt}>纳管既有配置</Button>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1">
+                <Button onClick={refresh}>重连并下发</Button>
+                <Hint text="重新建立 SSH 连接，并把面板内核脚本（wgagent.py）重新传到节点上——升级面板之后点它，让节点上的脚本跟面板一致。只读，不改任何 VPN 配置。" />
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Button onClick={adopt}>纳管既有配置</Button>
+                <Hint text="把节点上现有的 wg0.conf 里的 peer 收进面板的登记表，之后配置由面板统一管理。会先自动备份，再把 SaveConfig 改成 false 并重渲染配置（不断线）。幂等，可重复执行。" />
+              </span>
             </div>
           }
         />

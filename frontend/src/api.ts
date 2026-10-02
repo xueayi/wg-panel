@@ -86,6 +86,32 @@ export interface AuditRow {
   detail: string
 }
 
+export interface DoctorIssue {
+  code: string
+  message: string
+  fix: string
+  hint: string
+  target: string
+}
+
+export interface DoctorResult {
+  problems: (DoctorIssue | string)[]
+  warnings: (DoctorIssue | string)[]
+}
+
+export interface ConnSettings {
+  driver: string
+  read_only: boolean
+  iface: string
+  ssh_host: string
+  ssh_port: number
+  ssh_user: string
+  ssh_remote_tool: string
+  agent_path: string
+  key: { path: string; uploaded: boolean; fingerprint: string; managed: boolean }
+  problems: string[]
+}
+
 export interface Status {
   connected: boolean
   peers: number
@@ -107,7 +133,23 @@ export const api = {
   patchServer: (body: Record<string, unknown>) =>
     req<Record<string, unknown>>('/server', { method: 'PATCH', body: JSON.stringify(body) }),
   ipPool: () => req<IpPool>('/ip-pool'),
-  doctor: () => req<{ problems: string[]; warnings: string[] }>('/doctor'),
+  doctor: () => req<DoctorResult>('/doctor'),
+  doctorFix: (code: string) =>
+    req<Record<string, unknown>>(`/doctor/fix?code=${encodeURIComponent(code)}`, { method: 'POST' }),
+  resignPeer: (name: string) =>
+    req<Record<string, unknown>>(`/peers/${name}/resign`, { method: 'POST' }),
+
+  connSettings: () => req<ConnSettings>('/settings'),
+  patchConnSettings: (body: Record<string, unknown>) =>
+    req<Record<string, unknown>>('/settings', { method: 'PATCH', body: JSON.stringify(body) }),
+  uploadSshKey: (privateKey: string) =>
+    req<{ uploaded: boolean; path: string; fingerprint: string }>('/settings/ssh-key', {
+      method: 'POST',
+      body: JSON.stringify({ private_key: privateKey }),
+    }),
+  testConnection: () =>
+    req<{ ok: boolean; error?: string; peers?: number; online?: number; agent_redeployed?: boolean }>(
+      '/settings/test', { method: 'POST' }),
   syncSiteRoutes: () =>
     req<{ changed: boolean; site_routes: string[]; client_lan_allowed_ips: string[] }>(
       '/sync-site-routes?confirm=true', { method: 'POST' }),

@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS audit (
     detail  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts DESC);
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 
@@ -49,6 +53,20 @@ class Store:
                 "ON CONFLICT(id) DO UPDATE SET username = excluded.username, "
                 "password_hash = excluded.password_hash",
                 (username, password_hash, int(time.time())),
+            )
+
+    # ── 设置（连接参数在 Web 上改，落这里覆盖 env 默认值）──
+    def get_settings(self) -> dict:
+        with sqlite3.connect(self.path) as conn:
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        return {k: v for k, v in rows}
+
+    def put_settings(self, data: dict) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.executemany(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [(k, str(v)) for k, v in data.items()],
             )
 
     # ── 审计 ──

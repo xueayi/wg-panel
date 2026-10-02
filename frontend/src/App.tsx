@@ -25,17 +25,19 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { err: Error | nu
     )
   }
 }
+import Connection from './views/Connection'
 import Dashboard from './views/Dashboard'
 import Peers from './views/Peers'
 import Server from './views/Server'
 import System from './views/System'
 
-type Tab = 'overview' | 'peers' | 'server' | 'system'
+type Tab = 'overview' | 'peers' | 'server' | 'connection' | 'system'
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: '概览' },
   { key: 'peers', label: '客户端' },
   { key: 'server', label: '中转节点 & IP' },
+  { key: 'connection', label: '连接设置' },
   { key: 'system', label: '备份 & 审计' },
 ]
 
@@ -116,6 +118,7 @@ export default function App() {
               {tab === 'overview' && <Dashboard onToast={say} onGoPeers={() => setTab('peers')} />}
               {tab === 'peers' && <Peers onToast={say} />}
               {tab === 'server' && <Server onToast={say} />}
+              {tab === 'connection' && <Connection onToast={say} />}
               {tab === 'system' && <System onToast={say} />}
             </ErrorBoundary>
           </div>

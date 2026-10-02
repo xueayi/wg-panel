@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .api import auth, peers, server, system
+from .api import settings as settings_api
 from .config import settings
 from .drivers.base import ExecutorError
 from .security import hash_password
@@ -35,9 +36,27 @@ def create_app() -> FastAPI:
         app.state.store.set_admin("admin", hash_password(settings.admin_password))
         log.info("已用 WGP_ADMIN_PASSWORD 初始化管理员口令")
 
+    # 面板里改过的连接设置覆盖 env 默认值（换节点、改端口不用动 compose）
+    overrides = app.state.store.get_settings()
+    if overrides:
+        parsed: dict = {}
+        for k, v in overrides.items():
+            if k in ("ssh_port", "ssh_timeout"):
+                try:
+                    parsed[k] = int(v)
+                except ValueError:
+                    continue
+            elif k == "read_only":
+                parsed[k] = str(v).lower() in ("1", "true", "yes")
+            else:
+                parsed[k] = v
+        settings.apply(parsed)
+        log.info("已载入面板里的连接设置：%s", ", ".join(f"{k}={v}" for k, v in parsed.items()))
+
     app.include_router(auth.router)
     app.include_router(peers.router)
     app.include_router(server.router)
+    app.include_router(settings_api.router)
     app.include_router(system.router)
 
     @app.on_event("startup")

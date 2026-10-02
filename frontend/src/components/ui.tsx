@@ -13,7 +13,7 @@ export function CardHeader({
   desc,
   action,
 }: {
-  title: string
+  title: React.ReactNode
   desc?: string
   action?: React.ReactNode
 }) {
@@ -70,6 +70,20 @@ export function Badge({
 export function Dot({ tone }: { tone: 'green' | 'slate' | 'amber' }) {
   const tones = { green: 'bg-emerald-500', slate: 'bg-slate-300', amber: 'bg-amber-400' }
   return <span className={`inline-block h-1.5 w-1.5 rounded-full ${tones[tone]}`} />
+}
+
+/** 悬浮问号：把「这个按钮到底干嘛的」写在旁边，不占版面。 */
+export function Hint({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex align-middle">
+      <span className="grid h-4 w-4 cursor-help select-none place-items-center rounded-full border border-slate-300 text-[10px] leading-none text-slate-400 hover:border-slate-400 hover:text-slate-500">
+        ?
+      </span>
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-2 hidden w-64 -translate-x-1/2 rounded-lg bg-slate-900 px-3 py-2 text-[12px] font-normal leading-relaxed text-white shadow-pop group-hover:block">
+        {text}
+      </span>
+    </span>
+  )
 }
 
 export function Field({

@@ -59,6 +59,34 @@ def doctor(request: Request, _: str = Depends(current_user_dep)):
     return agent_call(get_executor(), ["doctor"], store=_store(request))
 
 
+FIXABLE = {
+    "fix-perms": ["fix-perms"],
+    "sync": ["sync"],
+    "adopt": ["adopt", "--yes"],
+}
+
+
+@router.post("/doctor/fix")
+def doctor_fix(request: Request, code: str = Query(...), _: str = Depends(current_user_dep)):
+    """体检条目的一键处理。只允许白名单里的动作。"""
+    args = FIXABLE.get(code)
+    if not args:
+        raise HTTPException(status_code=400,
+                            detail=f"不支持的修复动作：{code}（可选：{', '.join(FIXABLE)}）")
+    out = agent_call(get_executor(), args, action="doctor.fix", target=code,
+                     confirmed=True, store=_store(request))
+    _store(request).audit("doctor.fix", code, "ok", "体检一键处理")
+    return {"code": code, "result": out}
+
+
+@router.post("/peers/{name}/resign")
+def resign_peer(name: str, request: Request, _: str = Depends(current_user_dep)):
+    out = agent_call(get_executor(), ["resign", name], action="peer.resign", target=name,
+                     store=_store(request))
+    _store(request).audit("peer.resign", name, "ok", "重签客户端配置")
+    return out
+
+
 @router.get("/backups")
 def backups(request: Request, _: str = Depends(current_user_dep)):
     data = agent_call(get_executor(), ["backups"], store=_store(request))

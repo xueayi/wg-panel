@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/components/ui.tsx","./src/views/dashboard.tsx","./src/views/peers.tsx","./src/views/server.tsx","./src/views/system.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/components/ui.tsx","./src/views/connection.tsx","./src/views/dashboard.tsx","./src/views/peers.tsx","./src/views/server.tsx","./src/views/system.tsx"],"version":"5.9.3"}

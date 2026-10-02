@@ -53,8 +53,16 @@ import subprocess
 import sys
 import time
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# 面板面向中文用户，时间一律按东八区显示（中国无夏令时，用固定偏移即可，
+# 不依赖容器里的 tzdata，slim 镜像也稳）
+TZ8 = timezone(timedelta(hours=8))
+
+
+def now_local() -> datetime:
+    return datetime.now(TZ8)
 
 # ─────────────────────────── 路径与常量 ───────────────────────────
 
@@ -443,52 +451,80 @@ def cmd_render(args):
     return 0
 
 
+def _issue(code: str, message: str, *, fix: str = "", hint: str = "",
+           target: str = "") -> dict:
+    """体检条目：面板按 code/fix 决定给什么按钮，hint 是展开后的处理指引。"""
+    return {"code": code, "message": message, "fix": fix, "hint": hint, "target": target}
+
+
 def cmd_doctor(args):
     v = view()
-    problems: list[str] = []
-    warns: list[str] = []
+    problems: list[dict] = []
+    warns: list[dict] = []
     iface = v["interface"]
 
     if sh([WG_BIN, "show", IFACE], check=False).returncode != 0:
-        problems.append(f"接口 {IFACE} 未启动")
+        problems.append(_issue(
+            "iface-down", f"接口 {IFACE} 未启动",
+            hint=f"在中转节点上执行 wg-quick up {IFACE}；若是新节点，先确认已装 wireguard-tools"))
     if iface.get("SaveConfig", "false").lower() == "true":
-        problems.append("SaveConfig = true：wg-quick 会把运行时快照写回配置，导致注释/顺序丢失、配置漂移")
+        problems.append(_issue(
+            "saveconfig-true", "SaveConfig = true：wg-quick 会把运行时快照写回配置，导致注释/顺序丢失、配置漂移",
+            fix="adopt", hint="点「纳管既有配置」会改成 false 并按登记表重渲染（写前自动备份）"))
     if not CONF.exists():
-        problems.append(f"配置文件缺失：{CONF}")
+        problems.append(_issue(
+            "conf-missing", f"配置文件缺失：{CONF}",
+            hint=f"确认接口名是否正确；若是全新节点，先手动创建 {CONF} 并写入 [Interface] 段"))
     else:
         m = oct(CONF.stat().st_mode)[-3:]
         if m != "600":
-            warns.append(f"{CONF} 权限 {m}，建议 600")
+            warns.append(_issue(
+                "conf-perms", f"{CONF.name} 权限 {m}，建议 600",
+                fix="fix-perms", hint=f"chmod 600 {CONF}"))
     if CLIENTS.is_dir():
-        for f in list(CLIENTS.iterdir()):
+        for f in sorted(CLIENTS.iterdir()):
             if f.suffix == ".key" and oct(f.stat().st_mode)[-3:] != "600":
-                warns.append(f"{f.name} 权限 {oct(f.stat().st_mode)[-3:]}（私钥应为 600）")
+                warns.append(_issue(
+                    "key-perms", f"{f.name} 权限 {oct(f.stat().st_mode)[-3:]}（私钥应为 600）",
+                    fix="fix-perms", target=f.name,
+                    hint="私钥可被同机其他用户读取。点「修复权限」一次性收紧到 600"))
     ipf = sh(["sysctl", "-n", "net.ipv4.ip_forward"], check=False).stdout.strip()
     if ipf != "1":
-        problems.append("net.ipv4.ip_forward != 1：客户端无法经此访问外网")
-    if not (WG_DIR / f"{IFACE}.conf").exists():
-        pass
+        problems.append(_issue(
+            "ip-forward-off", "net.ipv4.ip_forward != 1：客户端无法经此访问外网",
+            hint="在节点执行：echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && sysctl -p"))
     for r in v["rows"]:
         if not r["in_registry"]:
-            warns.append(f"{r['name']}：配置文件里有 peer 但登记表没有（跑 adopt 纳管）")
+            warns.append(_issue(
+                "not-adopted", f"{r['name']}：配置文件里有 peer 但登记表没有",
+                fix="adopt", target=r["name"], hint="点「纳管既有配置」把它收进登记表"))
         if r["in_live"] and not r["in_conf"]:
-            warns.append(f"{r['name']}：只存在于运行时，重启即丢")
+            warns.append(_issue(
+                "runtime-only", f"{r['name']}：只存在于运行时，重启即丢",
+                fix="sync", target=r["name"], hint="点「同步配置」按登记表重写并同步到内核"))
         if r["in_conf"] and not r["in_live"]:
-            problems.append(f"{r['name']}：配置文件里有但运行时没有（未同步，跑 sync）")
+            problems.append(_issue(
+                "conf-not-live", f"{r['name']}：配置文件里有但运行时没有",
+                fix="sync", target=r["name"], hint="点「同步配置」把配置同步进内核"))
         if r["handshake"] and time.time() - r["handshake"] > 90 * 86400:
-            warns.append(f"{r['name']}：{human_age(r['handshake'])}没握手，疑似僵尸节点")
+            warns.append(_issue(
+                "stale-peer", f"{r['name']}：{human_age(r['handshake'])}没握手，疑似僵尸节点",
+                target=r["name"], hint="确认这设备还在用吗？不用了就在「客户端」页删除（先自动备份），暂时不用就选「停用」"))
         if not r["has_client_files"] and r["name"] not in ("unnamed",):
             if not r["in_registry"]:
                 continue
-            warns.append(f"{r['name']}：clients/ 下无 .conf，无法重新下发")
-    ips = {}
+            warns.append(_issue(
+                "no-client-files", f"{r['name']}：clients/ 下无 .conf，无法重新下发",
+                fix="resign", target=r["name"], hint="点「重签配置」用已存私钥重新生成（缺私钥则需重新添加该客户端）"))
+    ips: dict[str, list[str]] = {}
     for r in v["rows"]:
         if r["ip"]:
             ips.setdefault(r["ip"], []).append(r["name"])
     for ip, who in ips.items():
         if len(who) > 1:
-            problems.append(f"IP 冲突 {ip}：{', '.join(who)}")
-    p = sh(["grep", "-c", "", str(REGISTRY)], check=False) if REGISTRY.exists() else None
+            problems.append(_issue(
+                "ip-conflict", f"IP 冲突 {ip}：{', '.join(who)}",
+                hint="在「客户端」页编辑其中一个，改掉虚拟 IP（面板会拒绝再次分配同一地址）"))
 
     if args.json:
         print(json.dumps({"problems": problems, "warnings": warns}, ensure_ascii=False, indent=2))
@@ -496,14 +532,37 @@ def cmd_doctor(args):
         if problems:
             print(color(f"发现 {len(problems)} 个问题：", C_ERR))
             for x in problems:
-                print(f"  ✖ {x}")
+                print(f"  ✖ {x['message']}")
         if warns:
             print(color(f"{len(warns)} 条建议：", C_WARN))
             for x in warns:
-                print(f"  ! {x}")
+                print(f"  ! {x['message']}")
         if not problems and not warns:
             print(color("✅ 一切正常", C_OK))
     return 1 if problems else 0
+
+
+def cmd_fix_perms(args):
+    """把客户端目录下的私钥与配置权限一次性收紧到 600（幂等，可反复跑）。"""
+    fixed, skipped = [], 0
+    targets = []
+    if CLIENTS.is_dir():
+        targets += [f for f in sorted(CLIENTS.iterdir()) if f.suffix in (".key", ".conf", ".pub")]
+    if CONF.exists():
+        targets.append(CONF)
+    for f in targets:
+        mode = oct(f.stat().st_mode)[-3:]
+        if mode != "600":
+            os.chmod(f, 0o600)
+            fixed.append(f"{f.name}（{mode} → 600）")
+        else:
+            skipped += 1
+    payload = {"fixed": fixed, "fixed_count": len(fixed), "already_ok": skipped}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"✅ 已收紧 {len(fixed)} 个文件权限" + ("" if not fixed else "：" + "，".join(fixed)))
+    return 0
 
 
 # ─────────────────────────── 备份 ───────────────────────────
@@ -511,9 +570,11 @@ def cmd_doctor(args):
 def make_backup(tag: str = "manual") -> Path:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(BACKUP_DIR, 0o700)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = now_local().strftime("%Y%m%d-%H%M%S")
     dst = BACKUP_DIR / f"{IFACE}.conf.{ts}.{tag}"
-    shutil.copy2(CONF, dst)
+    # 用 copy 而不是 copy2：备份文件的 mtime 应该是「备份发生的时刻」，
+    # 而不是被备份的那份配置的旧时间戳（否则列表里全是几个月前的日期）
+    shutil.copy(CONF, dst)
     os.chmod(dst, 0o600)
     return dst
 
@@ -539,7 +600,9 @@ def cmd_backups(args):
     if args.json:
         print(json.dumps([{"name": f.name,
                            "size": f.stat().st_size,
-                           "mtime": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")}
+                           "mtime": datetime.fromtimestamp(f.stat().st_mtime, TZ8)
+                                    .strftime("%Y-%m-%d %H:%M:%S"),
+                           "ts": int(f.stat().st_mtime)}
                           for f in files], ensure_ascii=False, indent=2))
         return 0
     if not files:
@@ -1335,6 +1398,10 @@ def build_parser():
     p = sub.add_parser("doctor", help="体检")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("fix-perms", help="把私钥/配置权限收紧到 600")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_fix_perms)
     return ap
 
 

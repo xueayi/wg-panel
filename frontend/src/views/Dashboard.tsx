@@ -1,6 +1,74 @@
 import { useEffect, useState } from 'react'
-import { api, humanBytes, Peer, ServerInfo, Status } from '../api'
+import { api, DoctorIssue, humanBytes, Peer, ServerInfo, Status } from '../api'
 import { Badge, Button, Card, CardHeader, Dot } from '../components/ui'
+
+/** 体检条目：默认一行文字保持简洁，「处理」能自动修的直接修，「指引」展开看怎么做。 */
+function IssueRow({
+  issue,
+  tone,
+  onFixed,
+  onToast,
+}: {
+  issue: DoctorIssue
+  tone: 'err' | 'warn'
+  onFixed: () => void
+  onToast: (m: string, t?: 'ok' | 'err') => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const box = tone === 'err' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'
+
+  const fix = async () => {
+    setBusy(true)
+    try {
+      await api.doctorFix(issue.fix)
+      onToast('已处理，正在复核体检结果')
+      onFixed()
+    } catch (e) {
+      onToast((e as Error).message, 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className={`rounded-lg ${box}`}>
+      <div className="flex items-start justify-between gap-2 px-3 py-2">
+        <span className="text-[13px] leading-relaxed">{issue.message}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          {issue.fix && (
+            <button
+              onClick={fix}
+              disabled={busy}
+              className="rounded-md bg-white/80 px-2 py-0.5 text-[12px] font-medium text-slate-700 hover:bg-white disabled:opacity-50"
+            >
+              {busy ? '处理中…' : '处理'}
+            </button>
+          )}
+          {issue.hint && (
+            <button
+              onClick={() => setOpen(!open)}
+              className="rounded-md px-1.5 py-0.5 text-[12px] text-slate-500 hover:bg-white/60"
+            >
+              {open ? '收起' : '指引'}
+            </button>
+          )}
+        </span>
+      </div>
+      {open && issue.hint && (
+        <div className="mx-3 mb-2 rounded-md bg-white/70 px-2.5 py-2 text-[12px] leading-relaxed text-slate-600">
+          {issue.hint}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function toIssue(x: DoctorIssue | string): DoctorIssue {
+  return typeof x === 'string'
+    ? { code: 'legacy', message: x, fix: '', hint: '', target: '' }
+    : x
+}
 
 export default function Dashboard({
   onToast,
@@ -12,20 +80,22 @@ export default function Dashboard({
   const [status, setStatus] = useState<Status | null>(null)
   const [server, setServer] = useState<ServerInfo | null>(null)
   const [rows, setRows] = useState<Peer[]>([])
-  const [problems, setProblems] = useState<string[]>([])
-  const [warnings, setWarnings] = useState<string[]>([])
+  const [problems, setProblems] = useState<DoctorIssue[]>([])
+  const [warnings, setWarnings] = useState<DoctorIssue[]>([])
 
-  useEffect(() => {
+  const load = () => {
     Promise.all([api.status(), api.server(), api.peers(), api.doctor()])
       .then(([s, srv, p, d]) => {
         setStatus(s)
         setServer(srv)
         setRows(p.rows)
-        setProblems(d.problems || [])
-        setWarnings(d.warnings || [])
+        setProblems((d.problems || []).map(toIssue))
+        setWarnings((d.warnings || []).map(toIssue))
       })
       .catch((e) => onToast((e as Error).message, 'err'))
-  }, [])
+  }
+
+  useEffect(load, [])
 
   const healthy = problems.length === 0
 
@@ -92,20 +162,24 @@ export default function Dashboard({
         </Card>
 
         <Card>
-          <CardHeader title="体检" desc="配置与运行时的一致性检查" />
+          <CardHeader
+            title="体检"
+            desc="配置与运行时的一致性。可自动修的给「处理」，其余点「指引」看怎么做。"
+            action={
+              <Button size="sm" onClick={load}>
+                重新检查
+              </Button>
+            }
+          />
           <div className="space-y-2 px-5 py-4">
             {healthy && warnings.length === 0 && (
               <div className="rounded-lg bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700">一切正常</div>
             )}
             {problems.map((p) => (
-              <div key={p} className="rounded-lg bg-red-50 px-3 py-2 text-[13px] leading-relaxed text-red-700">
-                {p}
-              </div>
+              <IssueRow key={p.code + p.message} issue={p} tone="err" onFixed={load} onToast={onToast} />
             ))}
             {warnings.map((w) => (
-              <div key={w} className="rounded-lg bg-amber-50 px-3 py-2 text-[13px] leading-relaxed text-amber-700">
-                {w}
-              </div>
+              <IssueRow key={w.code + w.message} issue={w} tone="warn" onFixed={load} onToast={onToast} />
             ))}
             {(status?.problems || []).length > 0 && (
               <div className="space-y-2 pt-2">

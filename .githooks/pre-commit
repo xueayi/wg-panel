@@ -16,8 +16,10 @@ files=$(printf '%s\n' "$staged" | grep -E '.' | while read -r f; do
 done | grep -vE '\.(png|jpg|jpeg|webp|ico|woff2?|ttf|zip|gz|pdf)$' || true)
 
 for f in $files; do
-  # 1. 私钥块
-  if grep -nE "BEGIN (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY" "$f" >/dev/null 2>&1; then
+  # 1. 私钥块：光有 BEGIN 字样不算（代码里常拿它当占位提示），
+  #    必须真的跟着一段 base64 正文（≥60 字符的纯 base64 行）才判为私钥
+  if grep -qE "BEGIN .*PRIVATE KEY" "$f" 2>/dev/null \
+     && grep -qE "^[A-Za-z0-9+/]{60,}={0,2}$" "$f" 2>/dev/null; then
     report "$f" "$(grep -nE 'BEGIN .*PRIVATE KEY' "$f" | head -1)"
   fi
   # 2. Docker Hub / 常见令牌形状

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, IpPool, Peer, ServerInfo } from '../api'
-import { Badge, Button, Card, CardHeader, Empty, Field, inputClass } from '../components/ui'
+import { Badge, Button, Card, CardHeader, Empty, Field, Hint, inputClass } from '../components/ui'
 
 export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' | 'err') => void }) {
   const [info, setInfo] = useState<ServerInfo | null>(null)
@@ -110,6 +110,8 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
           title="站点互联"
           desc="这些节点本身是网关，背后各挂着一个局域网。中转节点靠这些网段知道「包该转给谁」。"
           action={
+            <span className="inline-flex items-center gap-1">
+            <Hint text="把所有站点背后的局域网网段，加进每个客户端的 AllowedIPs 并重新下发配置。加了一个带内网的节点后点它，其它设备才能访问那个内网。会先自动备份。" />
             <Button
               variant="primary"
               disabled={!siteNodes.length}
@@ -127,6 +129,7 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
             >
               并入客户端并重签
             </Button>
+            </span>
           }
         />
         {siteNodes.length === 0 ? (
