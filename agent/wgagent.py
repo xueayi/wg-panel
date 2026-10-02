@@ -163,9 +163,25 @@ def iface_map(pairs) -> dict:
     return {k: v for k, v in pairs}
 
 
+def extra_networks(iface: dict) -> list[str]:
+    """除主网段外，额外挂在这个接口上的虚拟网段（IP 池可横向扩展）。"""
+    return [n for n in (iface.get("extra_networks") or []) if n]
+
+
+def gateway_addr(net: str) -> str:
+    """10.8.2.0/24 → 10.8.2.1/24（该网段在接口上的网关地址）"""
+    base, _, prefix = net.partition("/")
+    octs = base.split(".")
+    if len(octs) != 4:
+        return net
+    octs[-1] = "1"
+    return ".".join(octs) + "/" + (prefix or "24")
+
+
 def render_conf(iface: dict, clients: dict, private_key: str) -> str:
     """由登记表渲染完整 wg0.conf。确定性强：键序固定、客户端按 IP 排序。"""
-    out = ["[Interface]", f"Address = {iface['address']}", "SaveConfig = false"]
+    addrs = [iface["address"]] + [gateway_addr(n) for n in extra_networks(iface)]
+    out = ["[Interface]", f"Address = {', '.join(addrs)}", "SaveConfig = false"]
     if iface.get("mtu"):
         out.append(f"MTU = {iface['mtu']}")
     out.append(f"ListenPort = {iface['listen_port']}")
@@ -694,14 +710,34 @@ def used_ips(reg: dict) -> set[str]:
     return used
 
 
-def next_free_ip(reg: dict, network: str) -> str:
+def all_networks(reg: dict) -> list[str]:
+    """这个接口上可用来分配客户端地址的全部网段：主网段 + 扩展网段。"""
+    iface = reg.get("interface", {})
+    nets: list[str] = []
+    if iface.get("address"):
+        nets.append(iface_network(iface["address"]))
+    for n in extra_networks(iface):
+        if n not in nets:
+            nets.append(n)
+    return nets
+
+
+def free_ips_in(reg: dict, network: str, limit: int = 50) -> list[str]:
     base = network.rsplit(".", 1)[0]
     used = used_ips(reg)
-    for i in range(2, 255):
-        ip = f"{base}.{i}"
-        if ip not in used:
-            return ip
-    die("IP 池已耗尽", 2)
+    return [f"{base}.{i}" for i in range(2, 255) if f"{base}.{i}" not in used][:limit]
+
+
+def next_free_ip(reg: dict, network: str | None = None) -> str:
+    """优先在指定网段分配；不指定就按主网段 → 扩展网段的顺序找第一个空位。"""
+    for net in ([network] if network else all_networks(reg)):
+        base = net.rsplit(".", 1)[0]
+        used = used_ips(reg)
+        for i in range(2, 255):
+            ip = f"{base}.{i}"
+            if ip not in used:
+                return ip
+    die("虚拟 IP 池已耗尽：可以在「中转节点 & IP」页添加新的虚拟网段", 2)
     return ""
 
 
@@ -767,7 +803,7 @@ def cmd_add(args):
     if not server_pub:
         server_pub = sh([WG_BIN, "show", IFACE, "public-key"]).stdout.strip()
 
-    ip = args.ip or next_free_ip(reg, iface_network(iface["address"]))
+    ip = args.ip or next_free_ip(reg, getattr(args, "net", None))
     owner = next((n for n, c in clients.items() if c.get("ip") == ip and n != name), None)
     if owner and not args.force:
         die(f"IP {ip} 已被 {owner} 占用。换一个地址，或用 --ip 指定空闲地址（强行覆盖加 --force）", 1)
@@ -1053,31 +1089,112 @@ def cmd_update(args):
     return 0
 
 
-def cmd_ip_pool(args):
-    """虚拟 IP 占用视图：已分配的、空闲的、下一个可分配的。"""
-    reg = load_registry(required=True)
-    network = iface_network(reg.get("interface", {}).get("address", "10.8.1.1/24"))
+def _pool_view(reg: dict, network: str, limit: int = 50) -> dict:
     base = network.rsplit(".", 1)[0]
-    used: dict[str, str] = {}
-    for name, c in reg.get("clients", {}).items():
-        if c.get("ip"):
-            used[c["ip"]] = name
-    free = [f"{base}.{i}" for i in range(2, 255) if f"{base}.{i}" not in used]
-    payload = {
+    used = {c["ip"]: n for n, c in reg.get("clients", {}).items() if c.get("ip")}
+    mine = {ip: n for ip, n in used.items() if ip.rsplit(".", 1)[0] == base}
+    free = free_ips_in(reg, network, limit)
+    return {
         "network": network,
+        "gateway": gateway_addr(network),
         "used": [{"ip": ip, "name": n} for ip, n in
-                 sorted(used.items(), key=lambda kv: ip_sort_key(kv[0]))],
-        "used_count": len(used),
-        "free_count": len(free),
+                 sorted(mine.items(), key=lambda kv: ip_sort_key(kv[0]))],
+        "used_count": len(mine),
+        "free_count": 253 - len(mine),
         "next": free[0] if free else None,
-        "free": free[: args.limit],
+        "free": free,
+    }
+
+
+def cmd_ip_pool(args):
+    """虚拟 IP 占用视图。支持多网段：每个网段各自统计，分配按顺序落到第一个有空位的段。"""
+    reg = load_registry(required=True)
+    nets = all_networks(reg) or ["10.8.1.0/24"]
+    pools = [_pool_view(reg, n, args.limit) for n in nets]
+    primary = pools[0]
+    payload = {
+        **primary,                       # 兼容旧字段（network/used/next…）
+        "networks": pools,
+        "next": primary["next"] or next((p["next"] for p in pools if p["next"]), None),
     }
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(f"网段 {network}   已分配 {len(used)}   空闲 {len(free)}   下一个 {payload['next'] or '（耗尽）'}")
-        for row in payload["used"]:
-            print(f"  {row['ip']:<14}{row['name']}")
+        for p in pools:
+            print(f"网段 {p['network']}  网关 {p['gateway']}  已分配 {p['used_count']}  "
+                  f"空闲 {p['free_count']}  下一个 {p['next'] or '（耗尽）'}")
+            for row in p["used"]:
+                print(f"  {row['ip']:<14}{row['name']}")
+    return 0
+
+
+def cmd_net_add(args):
+    """挂一个新的虚拟网段到这个接口（IP 池横向扩展）。"""
+    reg = load_registry(required=True)
+    net = (args.cidr or "").strip()
+    if not re.match(r"^\d{1,3}(\.\d{1,3}){2}\.0/\d{1,2}$", net):
+        die("只接受形如 10.8.2.0/24 的网段（主机位必须是 0）", 1)
+    iface = reg["interface"]
+    if net == iface_network(iface.get("address", "")):
+        die(f"{net} 已经是主网段了", 1)
+    extra = extra_networks(iface)
+    if net in extra:
+        die(f"{net} 已在虚拟网段里", 1)
+    for other in extra + [iface_network(iface.get("address", ""))]:
+        if other.split("/")[0] == net.split("/")[0]:
+            die(f"与已有网段 {other} 重叠", 1)
+    extra.append(net)
+    iface["extra_networks"] = extra
+    save_registry(reg)
+    tag = "net-add-" + net.replace(".", "").replace("/", "-")
+    write_conf(render_conf(iface, reg.get("clients", {}), _priv_key()), tag)
+    payload = {"added": net, "gateway": gateway_addr(net), "networks": all_networks(reg)}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"✅ 已挂上网段 {net}（网关 {gateway_addr(net)}），配置已同步")
+    return 0
+
+
+def cmd_net_rm(args):
+    """摘掉一个虚拟网段；段内还有客户端时拒绝。"""
+    reg = load_registry(required=True)
+    net = (args.cidr or "").strip()
+    iface = reg["interface"]
+    extra = extra_networks(iface)
+    if net not in extra:
+        die(f"{net} 不在虚拟网段里", 1)
+    base = net.rsplit(".", 1)[0] + "."
+    busy = [n for n, c in reg.get("clients", {}).items() if (c.get("ip") or "").startswith(base)]
+    if busy and not args.force:
+        die(f"{net} 里还有 {len(busy)} 个客户端（{', '.join(busy[:5])}），"
+            f"先迁移或删除它们，或加 --force 强行摘除", 1)
+    extra.remove(net)
+    iface["extra_networks"] = extra
+    save_registry(reg)
+    tag = "net-rm-" + net.replace(".", "").replace("/", "-")
+    write_conf(render_conf(iface, reg.get("clients", {}), _priv_key()), tag)
+    payload = {"removed": net, "networks": all_networks(reg)}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"✅ 已摘除网段 {net}，配置已同步")
+    return 0
+
+
+def cmd_backup_rm(args):
+    """删除单个备份文件（保留其它备份）。"""
+    name = Path(args.name).name
+    if not name.startswith(f"{IFACE}.conf."):
+        die("只能删除本接口的备份文件", 1)
+    target = BACKUP_DIR / name
+    if not target.exists():
+        die(f"找不到备份：{name}", 1)
+    target.unlink()
+    if args.json:
+        print(json.dumps({"removed": name}, ensure_ascii=False))
+    else:
+        print(f"✅ 已删除备份 {name}")
     return 0
 
 
@@ -1297,6 +1414,7 @@ def build_parser():
     p.add_argument("--ip", help="手工指定 IP")
     p.add_argument("--site-routes", help="此节点背后的局域网网段，逗号分隔（站点互联用），"
                                          "如：192.168.1.0/24")
+    p.add_argument("--net", help="指定从哪个虚拟网段分配地址（默认主网段，再扩展网段）")
     p.add_argument("--note")
     p.add_argument("--force", action="store_true", help="覆盖同名客户端")
     p.add_argument("--qr", action="store_true", help="顺便打印二维码")
@@ -1365,6 +1483,22 @@ def build_parser():
     p.add_argument("--resign-all", action="store_true")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_set_mtu)
+
+    p = sub.add_parser("net-add", help="挂一个新的虚拟网段（扩展 IP 池）")
+    p.add_argument("cidr", help="形如 10.8.2.0/24")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_net_add)
+
+    p = sub.add_parser("net-rm", help="摘掉一个虚拟网段")
+    p.add_argument("cidr")
+    p.add_argument("--force", action="store_true", help="段内还有客户端时强行摘除")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_net_rm)
+
+    p = sub.add_parser("backup-rm", help="删除单个备份文件")
+    p.add_argument("name")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_backup_rm)
 
     p = sub.add_parser("ip-pool", help="虚拟 IP 占用与空闲视图")
     p.add_argument("--limit", type=int, default=50, help="最多列出多少个空闲 IP")

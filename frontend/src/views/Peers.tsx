@@ -193,10 +193,23 @@ function CreateModal({
   const [name, setName] = useState('')
   const [tunnel, setTunnel] = useState('lan')
   const [ip, setIp] = useState('')
+  const [net, setNet] = useState('')
+  const [nets, setNets] = useState<string[]>([])
   const [siteRoutes, setSiteRoutes] = useState('')
   const [note, setNote] = useState('')
   const [dns, setDns] = useState('')
   const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    api
+      .server()
+      .then((s) => {
+        const list = [s.interface.address?.replace(/\d+\/(\d+)$/, '0/$1') || '', ...(s.extra_networks || [])]
+        setNets(list.filter(Boolean))
+      })
+      .catch(() => setNets([]))
+  }, [open])
 
   const submit = async () => {
     if (!name.trim()) return onToast('先填个客户端名', 'err')
@@ -205,6 +218,7 @@ function CreateModal({
       const body: Record<string, unknown> = { name: name.trim(), tunnel }
       if (ip.trim()) body.ip = ip.trim()
       if (siteRoutes.trim()) body.site_routes = siteRoutes.trim()
+      if (net.trim()) body.net = net.trim()
       if (note.trim()) body.note = note.trim()
       if (dns.trim()) body.dns = dns.trim()
       const p = await api.createPeer(body)
@@ -261,6 +275,18 @@ function CreateModal({
             ))}
           </div>
         </Field>
+        {nets.length > 1 && (
+          <Field label="从哪个虚拟网段分配" hint="多个网段时指定；不选则自动落到第一个有空位的段">
+            <select className={inputClass} value={net} onChange={(e) => setNet(e.target.value)}>
+              <option value="">自动（按顺序找空位）</option>
+              {nets.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="虚拟 IP（可选）" hint="留空自动分配最小空闲地址">
             <input className={inputClass} value={ip} onChange={(e) => setIp(e.target.value)} placeholder="10.8.1.20" />

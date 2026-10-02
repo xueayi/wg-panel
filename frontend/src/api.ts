@@ -57,19 +57,25 @@ export interface Peer {
 export interface ServerInfo {
   interface: { name: string; address: string; listen_port: string; public_key: string; save_config: string }
   advertised_endpoint: string
+  extra_networks: string[]
   client_lan_allowed_ips: string[]
   client_dns: string
   client_mtu: string
   stats: { total: number; online: number; disabled: number; rx: number; tx: number }
 }
 
-export interface IpPool {
+export interface PoolSegment {
   network: string
+  gateway: string
   used: { ip: string; name: string }[]
   used_count: number
   free_count: number
   next: string | null
   free: string[]
+}
+
+export interface IpPool extends PoolSegment {
+  networks: PoolSegment[]
 }
 
 export interface Backup {
@@ -134,8 +140,18 @@ export const api = {
     req<Record<string, unknown>>('/server', { method: 'PATCH', body: JSON.stringify(body) }),
   ipPool: () => req<IpPool>('/ip-pool'),
   doctor: () => req<DoctorResult>('/doctor'),
-  doctorFix: (code: string) =>
-    req<Record<string, unknown>>(`/doctor/fix?code=${encodeURIComponent(code)}`, { method: 'POST' }),
+  doctorFix: (code: string, name = '') =>
+    req<Record<string, unknown>>(
+      `/doctor/fix?code=${encodeURIComponent(code)}${name ? `&name=${encodeURIComponent(name)}` : ''}`,
+      { method: 'POST' }),
+  addNetwork: (cidr: string) =>
+    req<Record<string, unknown>>(`/networks?cidr=${encodeURIComponent(cidr)}&confirm=true`, { method: 'POST' }),
+  removeNetwork: (cidr: string, force = false) =>
+    req<Record<string, unknown>>(
+      `/networks?cidr=${encodeURIComponent(cidr)}&confirm=true${force ? '&force=true' : ''}`,
+      { method: 'DELETE' }),
+  deleteBackup: (name: string) =>
+    req<Record<string, unknown>>(`/backups/${encodeURIComponent(name)}?confirm=true`, { method: 'DELETE' }),
   resignPeer: (name: string) =>
     req<Record<string, unknown>>(`/peers/${name}/resign`, { method: 'POST' }),
 

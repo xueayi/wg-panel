@@ -139,9 +139,30 @@ export default function System({ onToast }: { onToast: (m: string, tone?: 'ok' |
                     {b.mtime} · {b.size} 字节
                   </div>
                 </div>
-                <Button size="sm" variant="danger" onClick={() => restore(b)}>
-                  回滚
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-flex items-center gap-1">
+                    <Button size="sm" onClick={() => restore(b)}>
+                      回滚
+                    </Button>
+                    <Hint text="用这份备份覆盖当前配置并同步到内核。覆盖前会自动再备份一份当前的，所以回滚本身也可以再回滚。" />
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    onClick={async () => {
+                      if (!confirm(`删除备份 ${b.name}？\n\n只删这一个备份文件，不影响当前配置。`)) return
+                      try {
+                        await api.deleteBackup(b.name)
+                        onToast('已删除该备份')
+                        load()
+                      } catch (e) {
+                        onToast((e as Error).message, 'err')
+                      }
+                    }}
+                  >
+                    删除
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>

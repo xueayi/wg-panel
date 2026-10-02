@@ -41,6 +41,64 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'system', label: '备份 & 审计' },
 ]
 
+/** 线性图标，跟随文字颜色 */
+function TabIcon({ tab }: { tab: Tab }) {
+  const common = {
+    width: 16,
+    height: 16,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.7,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    className: 'shrink-0',
+  }
+  switch (tab) {
+    case 'overview':
+      return (
+        <svg {...common}>
+          <rect x="3" y="3" width="7.5" height="7.5" rx="2" />
+          <rect x="13.5" y="3" width="7.5" height="7.5" rx="2" />
+          <rect x="3" y="13.5" width="7.5" height="7.5" rx="2" />
+          <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2" />
+        </svg>
+      )
+    case 'peers':
+      return (
+        <svg {...common}>
+          <rect x="7" y="2.5" width="10" height="19" rx="2.5" />
+          <path d="M10.5 18.5h3" />
+        </svg>
+      )
+    case 'server':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="5" r="2.2" />
+          <circle cx="5.5" cy="18" r="2.2" />
+          <circle cx="18.5" cy="18" r="2.2" />
+          <path d="M10.8 7l-3.6 8.9M13.2 7l3.6 8.9M7.7 18h8.6" />
+        </svg>
+      )
+    case 'connection':
+      return (
+        <svg {...common}>
+          <path d="M9.5 3v5M14.5 3v5" />
+          <path d="M6.5 8h11v2.5a5.5 5.5 0 01-11 0V8z" />
+          <path d="M12 16v5" />
+        </svg>
+      )
+    case 'system':
+      return (
+        <svg {...common}>
+          <ellipse cx="12" cy="6" rx="7.5" ry="2.8" />
+          <path d="M4.5 6v12c0 1.6 3.4 2.8 7.5 2.8s7.5-1.2 7.5-2.8V6" />
+          <path d="M4.5 12c0 1.6 3.4 2.8 7.5 2.8s7.5-1.2 7.5-2.8" />
+        </svg>
+      )
+  }
+}
+
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null)
   const [tab, setTab] = useState<Tab>('overview')
@@ -76,37 +134,64 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5">
-        <div className="flex items-center gap-2.5">
-          <img src="/logo.png" alt="wg-panel" className="h-7 w-7 rounded-lg object-cover" />
-          <span className="text-[15px] font-medium text-slate-900">wg-panel</span>
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5">
+        <div className="flex items-center gap-3">
+          <img src="/logo.png" alt="wg-panel" className="h-10 w-10 rounded-xl object-cover shadow-sm ring-1 ring-slate-200" />
+          <span className="text-[16px] font-medium text-slate-900">wg-panel</span>
           {readOnly && (
             <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[12px] text-amber-700 ring-1 ring-inset ring-amber-200">
               只读模式
             </span>
           )}
         </div>
-        <Button
-          size="sm"
-          onClick={async () => {
-            await api.logout().catch(() => null)
-            setAuthed(false)
-          }}
-        >
-          退出
-        </Button>
+        <div className="flex items-center gap-2">
+          <a
+            href="https://github.com/xueayi/wg-panel"
+            target="_blank"
+            rel="noreferrer noopener"
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-[13px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
+            </svg>
+            GitHub
+          </a>
+          <Button
+            size="sm"
+            onClick={async () => {
+              await api.logout().catch(() => null)
+              setAuthed(false)
+            }}
+          >
+            退出
+          </Button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <nav className="hidden w-48 shrink-0 border-r border-slate-200 bg-white px-2 py-3 sm:block">
+        <nav className="hidden w-52 shrink-0 border-r border-slate-200 bg-white px-2 py-3 sm:block">
           {TABS.map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`mb-0.5 block w-full rounded-lg px-3 py-2 text-left text-[13px] transition ${
-                tab === t.key ? 'bg-indigo-50 font-medium text-indigo-700' : 'text-slate-600 hover:bg-slate-50'
+              className={`mb-0.5 flex w-full items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-left text-[13px] transition ${
+                tab === t.key
+                  ? 'bg-indigo-50 font-medium text-indigo-700'
+                  : 'text-slate-600 hover:bg-slate-50'
               }`}
             >
+              <TabIcon tab={t.key} />
               {t.label}
             </button>
           ))}
@@ -162,11 +247,15 @@ function Login({ onOk }: { onOk: () => void }) {
   return (
     <div className="grid h-full place-items-center bg-slate-50 px-4">
       <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 shadow-card">
-        <div className="mb-5 flex items-center gap-2.5">
-          <img src="/logo.png" alt="wg-panel" className="h-9 w-9 rounded-xl object-cover" />
+        <div className="mb-6 flex flex-col items-center gap-3 text-center">
+          <img
+            src="/logo.png"
+            alt="wg-panel"
+            className="h-24 w-24 rounded-2xl object-cover shadow-card ring-1 ring-slate-200"
+          />
           <div>
-            <div className="text-[15px] font-medium text-slate-900">wg-panel</div>
-            <div className="text-[12px] text-slate-400">WireGuard 云端管理</div>
+            <div className="text-[17px] font-medium text-slate-900">wg-panel</div>
+            <div className="mt-0.5 text-[12px] text-slate-400">WireGuard 云端管理</div>
           </div>
         </div>
         <div className="space-y-3">

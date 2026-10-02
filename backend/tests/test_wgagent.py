@@ -172,6 +172,48 @@ def test_update_site_routes_can_clear(wg):
     assert wg["run"]("show", "gw")["site_routes"] == []
 
 
+def test_net_add_extends_pool_and_interface_address(wg):
+    """IP 池可以横向扩段：接口会多出一个网关地址，地址池随即变大。"""
+    r = wg["run"]("net-add", "10.8.2.0/24")
+    assert r["networks"] == ["10.8.1.0/24", "10.8.2.0/24"]
+
+    body = wg["conf_text"]()
+    assert "Address = 10.8.1.1/24, 10.8.2.1/24" in body, "接口应同时持有两个网段地址"
+
+    pool = wg["run"]("ip-pool")
+    assert [p["network"] for p in pool["networks"]] == ["10.8.1.0/24", "10.8.2.0/24"]
+    assert pool["networks"][1]["gateway"] == "10.8.2.1/24"
+
+
+def test_add_can_target_a_specific_network(wg):
+    wg["run"]("net-add", "10.8.2.0/24")
+    r = wg["run"]("add", "iot", "--tunnel", "lan", "--net", "10.8.2.0/24")
+    assert r["ip"] == "10.8.2.2"
+
+
+def test_net_rm_refuses_while_in_use(wg):
+    wg["run"]("net-add", "10.8.2.0/24")
+    wg["run"]("add", "iot", "--tunnel", "lan", "--net", "10.8.2.0/24")
+
+    with pytest.raises(AssertionError) as exc:
+        wg["run"]("net-rm", "10.8.2.0/24")
+    assert "还有 1 个客户端" in str(exc.value)
+
+    wg["run"]("remove", "iot", "--yes")
+    assert wg["run"]("net-rm", "10.8.2.0/24")["removed"] == "10.8.2.0/24"
+
+
+def test_backup_rm_deletes_one_backup(wg):
+    wg["run"]("add", "a", "--tunnel", "lan")
+    wg["run"]("add", "b", "--tunnel", "lan")
+    names = [b["name"] for b in wg["run"]("backups")]
+    assert len(names) >= 2
+
+    assert wg["run"]("backup-rm", names[0])["removed"] == names[0]
+    rest = [b["name"] for b in wg["run"]("backups")]
+    assert names[0] not in rest and names[1] in rest, "只该删掉指定的那一个"
+
+
 def test_every_command_accepts_json_flag(wg):
     """后端对所有命令统一追加 --json；哪个命令没接住，面板上对应按钮就会报 usage。"""
     wg["run"]("add", "phone", "--tunnel", "lan")

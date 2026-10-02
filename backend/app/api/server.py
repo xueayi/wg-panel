@@ -39,6 +39,7 @@ def get_server(request: Request, _: str = Depends(current_user)):
             "public_key": "",  # 由 status 补全
             "save_config": iface.get("SaveConfig", "false"),
         },
+        "extra_networks": (reg.get("interface") or {}).get("extra_networks", []) or [],
         "advertised_endpoint": reg.get("advertised_endpoint", ""),
         "client_lan_allowed_ips": reg.get("client_lan_allowed_ips", []),
         "client_dns": reg.get("client_dns", ""),

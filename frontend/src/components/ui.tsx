@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 export function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
@@ -35,7 +36,7 @@ type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ variant = 'soft', size = 'md', className = '', ...rest }: ButtonProps) {
   const base =
-    'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
+    'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg font-medium transition disabled:cursor-not-allowed disabled:opacity-50'
   const sizes = size === 'sm' ? 'px-2.5 py-1.5 text-[13px]' : 'px-3.5 py-2 text-[13px]'
   const variants = {
     primary: 'bg-indigo-600 text-white hover:bg-indigo-500',
@@ -72,17 +73,39 @@ export function Dot({ tone }: { tone: 'green' | 'slate' | 'amber' }) {
   return <span className={`inline-block h-1.5 w-1.5 rounded-full ${tones[tone]}`} />
 }
 
-/** 悬浮问号：把「这个按钮到底干嘛的」写在旁边，不占版面。 */
+/** 悬浮问号：把「这个按钮到底干嘛的」写在旁边，不占版面。
+ *  气泡用 portal 挂到 body 上——否则会被内容区的 overflow 裁掉、或被顶栏盖住。 */
 export function Hint({ text }: { text: string }) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+
+  const show = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect()
+    setPos({ x: r.left + r.width / 2, y: r.top })
+  }
+
   return (
-    <span className="group relative inline-flex align-middle">
-      <span className="grid h-4 w-4 cursor-help select-none place-items-center rounded-full border border-slate-300 text-[10px] leading-none text-slate-400 hover:border-slate-400 hover:text-slate-500">
+    <>
+      <span
+        tabIndex={0}
+        onMouseEnter={(e) => show(e.currentTarget)}
+        onMouseLeave={() => setPos(null)}
+        onFocus={(e) => show(e.currentTarget)}
+        onBlur={() => setPos(null)}
+        className="inline-grid h-4 w-4 cursor-help select-none place-items-center rounded-full border border-slate-300 text-[10px] leading-none text-slate-400 hover:border-slate-400 hover:text-slate-500"
+      >
         ?
       </span>
-      <span className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-2 hidden w-64 -translate-x-1/2 rounded-lg bg-slate-900 px-3 py-2 text-[12px] font-normal leading-relaxed text-white shadow-pop group-hover:block">
-        {text}
-      </span>
-    </span>
+      {pos &&
+        createPortal(
+          <span
+            style={{ left: pos.x, top: Math.max(pos.y - 10, 8) }}
+            className="pointer-events-none fixed z-[100] w-64 -translate-x-1/2 -translate-y-full rounded-lg bg-slate-900/95 px-3 py-2 text-[12px] font-normal leading-relaxed text-white shadow-pop"
+          >
+            {text}
+          </span>,
+          document.body,
+        )}
+    </>
   )
 }
 

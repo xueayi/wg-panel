@@ -22,6 +22,7 @@ class PeerCreate(BaseModel):
     ip: Optional[str] = None
     allowed_ips: Optional[str] = None
     site_routes: Optional[str] = None      # 此节点背后的局域网网段（站点互联）
+    net: Optional[str] = None              # 从哪个虚拟网段分配地址（多网段时用）
     dns: Optional[str] = None
     mtu: Optional[int] = None
     note: str = ""
@@ -61,6 +62,8 @@ def create_peer(body: PeerCreate, request: Request, _: str = Depends(current_use
         args += ["--allowed-ips", body.allowed_ips]
     if body.site_routes:
         args += ["--site-routes", body.site_routes]
+    if body.net:
+        args += ["--net", body.net]
     if body.dns:
         args += ["--dns", body.dns]
     if body.mtu:

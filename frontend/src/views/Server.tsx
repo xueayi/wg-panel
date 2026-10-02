@@ -6,6 +6,8 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
   const [info, setInfo] = useState<ServerInfo | null>(null)
   const [pool, setPool] = useState<IpPool | null>(null)
   const [peerRows, setPeerRows] = useState<Peer[]>([])
+  const [newNet, setNewNet] = useState('')
+  const [busyNet, setBusyNet] = useState(false)
   const [endpoint, setEndpoint] = useState('')
   const [lan, setLan] = useState('')
   const [dns, setDns] = useState('')
@@ -51,7 +53,7 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
     }
   }
 
-  const usedIps = new Set((pool?.used || []).map((u) => u.ip))
+  const segments = pool?.networks?.length ? pool.networks : pool ? [pool] : []
   const siteNodes = peerRows.filter((r) => (r.site_routes || []).length > 0)
 
   return (
@@ -161,32 +163,68 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
 
       <Card>
         <CardHeader
-          title="虚拟 IP 池"
-          desc={
-            pool
-              ? `${pool.network} · 已分配 ${pool.used_count} · 空闲 ${pool.free_count} · 下一个可分配 ${pool.next || '（耗尽）'}`
-              : '载入中…'
+          title={
+            <span className="inline-flex items-center gap-1.5">
+              虚拟 IP 池
+              <Hint text="每个虚拟网段都是一个可分配的地址空间。主网段用满后，在这里挂一个新网段（比如 10.8.2.0/24），新增客户端会自动落到有空位的段。面板会把新网段加到接口地址上并同步到内核。" />
+            </span>
           }
+          desc={pool ? `共 ${segments.length} 个网段 · 已分配 ${pool.used_count + segments.slice(1).reduce((s, x) => s + x.used_count, 0)} · 下一个 ${pool.next || '（主网段已满）'}` : '载入中…'}
         />
         <div className="px-5 py-4">
           {pool ? (
             <>
-              <div className="flex flex-wrap gap-1">
-                {Array.from({ length: 253 }, (_, i) => {
-                  const ip = `10.8.1.${i + 2}`
-                  const taken = usedIps.has(ip)
-                  const owner = (pool.used || []).find((u) => u.ip === ip)
-                  return (
-                    <span
-                      key={ip}
-                      title={taken ? `${ip} · ${owner?.name}` : `${ip} 空闲`}
-                      className={`h-4 w-4 rounded-[3px] ${
-                        taken ? 'bg-indigo-500' : 'bg-slate-100'
-                      } ${ip === pool.next ? 'ring-2 ring-emerald-400' : ''}`}
-                    />
-                  )
-                })}
-              </div>
+              {segments.map((seg, idx) => {
+                const base = seg.network.split('/')[0].split('.').slice(0, 3).join('.')
+                const segUsed = new Set(seg.used.map((u) => u.ip))
+                return (
+                  <div key={seg.network} className={idx ? 'mt-6' : ''}>
+                    <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+                      <span className="font-medium text-slate-700">{seg.network}</span>
+                      <span className="text-slate-400">网关 {seg.gateway}</span>
+                      <span className="text-slate-400">
+                        已用 {seg.used_count} · 空闲 {seg.free_count}
+                      </span>
+                      {idx === 0 ? (
+                        <Badge tone="indigo">主网段</Badge>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          onClick={async () => {
+                            if (!confirm(`摘除虚拟网段 ${seg.network}？\n\n段内若还有客户端会被拒绝；摘除会重渲染并同步配置（先自动备份）。`)) return
+                            try {
+                              await api.removeNetwork(seg.network)
+                              onToast(`已摘除 ${seg.network}`)
+                              load()
+                            } catch (e) {
+                              onToast((e as Error).message, 'err')
+                            }
+                          }}
+                        >
+                          摘除
+                        </Button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {Array.from({ length: 253 }, (_, i) => {
+                        const ip = `${base}.${i + 2}`
+                        const owner = seg.used.find((u) => u.ip === ip)
+                        return (
+                          <span
+                            key={ip}
+                            title={owner ? `${ip} · ${owner.name}` : `${ip} 空闲`}
+                            className={`h-4 w-4 rounded-[3px] ${
+                              segUsed.has(ip) ? 'bg-indigo-500' : 'bg-slate-100'
+                            } ${ip === seg.next ? 'ring-2 ring-emerald-400' : ''}`}
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+
               <div className="mt-3 flex items-center gap-4 text-[12px] text-slate-500">
                 <span className="flex items-center gap-1.5">
                   <span className="h-3 w-3 rounded-[3px] bg-indigo-500" />已分配
@@ -198,13 +236,48 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
                   <span className="h-3 w-3 rounded-[3px] bg-slate-100 ring-2 ring-emerald-400" />下一个
                 </span>
               </div>
+
+              <div className="mt-5 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-4">
+                <div className="w-56">
+                  <Field label="添加虚拟网段" hint="主机位必须是 0">
+                    <input
+                      className={inputClass}
+                      value={newNet}
+                      onChange={(e) => setNewNet(e.target.value)}
+                      placeholder="10.8.2.0/24"
+                    />
+                  </Field>
+                </div>
+                <Button
+                  variant="primary"
+                  disabled={!newNet.trim() || busyNet}
+                  onClick={async () => {
+                    setBusyNet(true)
+                    try {
+                      await api.addNetwork(newNet.trim())
+                      onToast(`已挂上网段 ${newNet.trim()}`)
+                      setNewNet('')
+                      load()
+                    } catch (e) {
+                      onToast((e as Error).message, 'err')
+                    } finally {
+                      setBusyNet(false)
+                    }
+                  }}
+                >
+                  {busyNet ? '添加中…' : '添加网段'}
+                </Button>
+              </div>
+
               <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {pool.used.map((u) => (
-                  <div key={u.ip} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2">
-                    <span className="font-mono text-[12px] text-slate-600">{u.ip}</span>
-                    <span className="text-[13px] text-slate-700">{u.name}</span>
-                  </div>
-                ))}
+                {segments.flatMap((seg) =>
+                  seg.used.map((u) => (
+                    <div key={u.ip} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2">
+                      <span className="font-mono text-[12px] text-slate-600">{u.ip}</span>
+                      <span className="text-[13px] text-slate-700">{u.name}</span>
+                    </div>
+                  )),
+                )}
               </div>
             </>
           ) : (

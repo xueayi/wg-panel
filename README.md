@@ -7,6 +7,7 @@
 **WireGuard 云端可视化管理面板**
 
 [![Docker Image](https://img.shields.io/badge/docker-xueayis%2Fwg--panel-2496ED?logo=docker)](https://hub.docker.com/r/xueayis/wg-panel)
+[![Source](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/xueayi/wg-panel)
 [![Guide](https://img.shields.io/badge/教程-从零开始接入-4F46E5)](docs/guide/getting-started.md)
 
 </div>
@@ -76,8 +77,36 @@ mkdir -p ssh && cp ~/.ssh/id_ed25519 ssh/ && chmod 600 ssh/id_ed25519
 docker compose up -d
 ```
 
+### 连接设置就在面板里（推荐流程）
+
+容器环境变量只是**初始值**。启动后请打开「**连接设置**」页走一遍：
+
+1. 核对/修改**服务地址（Endpoint）**、SSH 端口与用户、接口名；
+2. 看 **SSH 私钥**是否显示"已就绪"（没有就粘贴私钥上传，面板会以 600 落盘并只回指纹）；
+3. 点「**测试连接**」——它会重连、把内核脚本重新下发到节点，并读回客户端数量。
+
+通过之后，以后换节点、改端口都在这个页面完成，不用再去 NAS 上编辑 `docker-compose.yml`。
+
 **首次上线建议**：先设 `WGP_READ_ONLY=1`，进「备份 & 审计」页点「纳管既有配置」把现网 peer
-收进登记表，确认界面显示的和实际一致后，再去掉只读开关。
+收进登记表，确认界面显示的和实际一致后，再去掉只读开关（也可以在「连接设置」页直接切换）。
+
+## 常见问题
+
+**登录口令是什么？** 用户名固定 `admin`，口令就是你部署时写在
+`WGP_ADMIN_PASSWORD` 里的那串——它只在**第一次启动**时用来初始化（存进 SQLite 的哈希），
+之后改 env 不再生效，请改用「连接设置」→ 修改口令，或调 `POST /api/auth/password`。
+
+**口令忘了怎么办？** 删掉面板数据库里的管理员记录再重启，会重新用 env 里的
+`WGP_ADMIN_PASSWORD` 初始化（审计日志与连接设置保留）：
+
+```bash
+docker compose exec wg-panel python -c \
+  "import sqlite3;c=sqlite3.connect('/data/panel.db');c.execute('DELETE FROM admin');c.commit()"
+docker compose restart
+```
+
+**备份存在哪？** 节点上的 `/root/wireguard/backup/`，每次写配置前自动落一份，
+面板「备份 & 审计」页可以回滚或删除单份。
 
 SSH 私钥只需一条能登到中转节点的密钥（ed25519 / rsa / ecdsa 均可），只读挂载。
 面板启动时会自动把 `wgagent.py` 下发到节点（sha256 比对，走 stdin 不经命令行参数）。

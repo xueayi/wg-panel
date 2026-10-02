@@ -67,16 +67,63 @@ FIXABLE = {
 
 
 @router.post("/doctor/fix")
-def doctor_fix(request: Request, code: str = Query(...), _: str = Depends(current_user_dep)):
-    """体检条目的一键处理。只允许白名单里的动作。"""
-    args = FIXABLE.get(code)
-    if not args:
-        raise HTTPException(status_code=400,
-                            detail=f"不支持的修复动作：{code}（可选：{', '.join(FIXABLE)}）")
-    out = agent_call(get_executor(), args, action="doctor.fix", target=code,
+def doctor_fix(request: Request, code: str = Query(...), name: str = Query(""),
+               _: str = Depends(current_user_dep)):
+    """体检条目的一键处理。只允许白名单里的动作；resign 需要指名客户端。"""
+    if code == "resign":
+        if not name:
+            raise HTTPException(status_code=400, detail="重签配置需要带上客户端名（name=…）")
+        args = ["resign", name]
+    else:
+        args = FIXABLE.get(code)
+        if not args:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的修复动作：{code}（可选：{', '.join(FIXABLE)}、resign）")
+    out = agent_call(get_executor(), args, action="doctor.fix", target=target_for(code, name),
                      confirmed=True, store=_store(request))
-    _store(request).audit("doctor.fix", code, "ok", "体检一键处理")
+    _store(request).audit("doctor.fix", target_for(code, name), "ok", f"体检一键处理：{code}")
     return {"code": code, "result": out}
+
+
+def target_for(code: str, name: str) -> str:
+    return f"{code}:{name}" if name else code
+
+
+@router.post("/networks")
+def add_network(request: Request, cidr: str = Query(...), confirm: bool = Query(False),
+                _: str = Depends(current_user_dep)):
+    """给接口挂一个新的虚拟网段（IP 池扩展）。会重渲染配置并同步。"""
+    if not confirm:
+        raise HTTPException(status_code=428,
+                            detail="添加网段会重写 wg0.conf 并同步到内核，需要 confirm=true")
+    out = agent_call(get_executor(), ["net-add", cidr], action="net.add", target=cidr,
+                     confirmed=True, store=_store(request))
+    _store(request).audit("net.add", cidr, "ok", "新增虚拟网段")
+    return out
+
+
+@router.delete("/networks")
+def remove_network(request: Request, cidr: str = Query(...), force: bool = Query(False),
+                   confirm: bool = Query(False), _: str = Depends(current_user_dep)):
+    if not confirm:
+        raise HTTPException(status_code=428, detail="摘除网段会重写配置，需要 confirm=true")
+    args = ["net-rm", cidr] + (["--force"] if force else [])
+    out = agent_call(get_executor(), args, action="net.rm", target=cidr,
+                     confirmed=True, store=_store(request))
+    _store(request).audit("net.rm", cidr, "ok", "摘除虚拟网段")
+    return out
+
+
+@router.delete("/backups/{name}")
+def delete_backup(name: str, request: Request, confirm: bool = Query(False),
+                  _: str = Depends(current_user_dep)):
+    if not confirm:
+        raise HTTPException(status_code=428, detail="删除备份不可撤销，需要 confirm=true")
+    out = agent_call(get_executor(), ["backup-rm", name], action="backup.rm", target=name,
+                     confirmed=True, store=_store(request))
+    _store(request).audit("backup.rm", name, "ok", "删除备份文件")
+    return out
 
 
 @router.post("/peers/{name}/resign")

@@ -21,7 +21,9 @@ function IssueRow({
   const fix = async () => {
     setBusy(true)
     try {
-      await api.doctorFix(issue.fix)
+      // resign 这类动作必须指名客户端，target 里带着（形如 istore_zhangjiang.key）
+      const name = issue.fix === 'resign' ? (issue.target || '').replace(/\.key$|\.conf$/, '') : ''
+      await api.doctorFix(issue.fix, name)
       onToast('已处理，正在复核体检结果')
       onFixed()
     } catch (e) {
