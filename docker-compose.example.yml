@@ -1,7 +1,7 @@
 # 示例配置：全部是占位符，真实值只写在部署机上（不入库）
 services:
   wg-panel:
-    image: xueayi/wg-panel:0.1.0
+    image: xueayis/wg-panel:0.1.0
     container_name: wg-panel
     restart: unless-stopped
     ports:

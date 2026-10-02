@@ -10,11 +10,10 @@ fail=0
 report() { printf '✖ 疑似敏感内容  %s\n   %s\n' "$1" "$2"; fail=1; }
 
 # 只扫描文本文件，跳过二进制
-files=$(printf '%s\n' "$staged" | while read -r f; do
+files=$(printf '%s\n' "$staged" | grep -E '.' | while read -r f; do
   [ -f "$f" ] || continue
-  case "$f" in *.png|*.jpg|*.webp|*.ico|*.woff*|*.zip) continue;; esac
   printf '%s\n' "$f"
-done)
+done | grep -vE '\.(png|jpg|jpeg|webp|ico|woff2?|ttf|zip|gz|pdf)$' || true)
 
 for f in $files; do
   # 1. 私钥块
