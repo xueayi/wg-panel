@@ -73,32 +73,41 @@ cd backend && pytest tests -q --basetemp=/tmp/wgpanel-pytest
 
 ## 部署
 
+compose 文件里**只有面板自己**的配置——中转节点相关的一切都在面板里填：
+
 ```bash
 cp docker-compose.example.yml docker-compose.yml
-cp .env.example .env          # 填真实值；这两个文件都不入库
-
-mkdir -p ssh && cp ~/.ssh/id_ed25519 ssh/ && chmod 600 ssh/id_ed25519
+# 只需改两处：WGP_ADMIN_PASSWORD（初始口令）、WGP_SECRET_KEY（openssl rand -hex 32）
 docker compose up -d
 ```
 
-### 连接设置就在面板里（推荐流程）
+打开 `http://<部署机IP>:13010` → 登录 → 「**连接设置**」→ 填中转节点地址与 SSH 凭证 → 「测试连接」。
+就这三步，不需要事先准备私钥目录，也不需要配置任何节点相关的环境变量。
 
-容器环境变量只是**初始值**。启动后请打开「**连接设置**」页走一遍：
+### 连接设置（标准流程）
 
-1. 核对/修改**服务地址（Endpoint）**、SSH 端口与用户、接口名；
-2. 看 **SSH 私钥**是否显示"已就绪"（没有就粘贴私钥上传，面板会以 600 落盘并只回指纹）；
-3. 点「**测试连接**」——它会重连、把内核脚本重新下发到节点，并读回客户端数量。
+1. **服务地址（Endpoint）**：中转节点的公网地址，客户端最终连的就是它；
+2. **SSH 端口 / 用户**：面板登节点用的（用户需能读写 `/etc/wireguard`，通常是 `root`）；
+3. **登录方式**：密钥或口令——
+   - 密钥：粘贴私钥上传，面板以 600 落盘，界面只回**指纹**（OpenSSH 风格 `SHA256:…`，
+     与 `ssh-keygen -lf 私钥` 的输出一致，可用来核对两边是不是同一把钥匙）；
+   - 口令：只写进 600 权限的文件，不进数据库、不进日志、接口不回显；
+4. 点「**测试连接**」——重连 + 重新下发内核脚本 + 读回客户端数量。
 
-通过之后，以后换节点、改端口都在这个页面完成，不用再去 NAS 上编辑 `docker-compose.yml`。
+### 面板账号
 
-**首次上线建议**：先设 `WGP_READ_ONLY=1`，进「备份 & 审计」页点「纳管既有配置」把现网 peer
-收进登记表，确认界面显示的和实际一致后，再去掉只读开关（也可以在「连接设置」页直接切换）。
+初始账号是 **`admin` / `admin`**（没设 `WGP_ADMIN_PASSWORD` 时），登录后顶栏会出现醒目提示，
+去「连接设置」→「面板账号」改成自己的用户名与口令即可。口令只在**第一次启动**用于初始化，
+之后改 env 不再生效。
+
+**首次上线建议**：先在「连接设置」里打开**只读模式**，去「备份 & 审计」页点「纳管既有配置」
+把现网 peer 收进登记表，确认界面显示的和实际一致后，再关掉只读。
 
 ## 常见问题
 
-**登录口令是什么？** 用户名固定 `admin`，口令就是你部署时写在
-`WGP_ADMIN_PASSWORD` 里的那串——它只在**第一次启动**时用来初始化（存进 SQLite 的哈希），
-之后改 env 不再生效，请改用「连接设置」→ 修改口令，或调 `POST /api/auth/password`。
+**登录账号是什么？** 初始是 **`admin` / `admin`**；如果你在 compose 里设了
+`WGP_ADMIN_PASSWORD`，那就是 `admin` + 你设的那串。它只在**第一次启动**时用于初始化
+（存进 SQLite 的哈希），之后改 env 不再生效——请到「连接设置」→「面板账号」里改用户名与口令。
 
 **口令忘了怎么办？** 删掉面板数据库里的管理员记录再重启，会重新用 env 里的
 `WGP_ADMIN_PASSWORD` 初始化（审计日志与连接设置保留）：
@@ -119,16 +128,18 @@ SSH 私钥只需一条能登到中转节点的密钥（ed25519 / rsa / ecdsa 均
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `WGP_DRIVER` | `mock` | `ssh` 纳管真实节点 / `mock` 演示 |
-| `WGP_READ_ONLY` | `0` | `1` 时所有写操作返回 423 |
-| `WGP_SSH_HOST` | — | 中转节点地址 |
-| `WGP_SSH_USER` | `root` | 需能读写 `/etc/wireguard` |
-| `WGP_SSH_KEY` | `/ssh/id_ed25519` | 私钥路径，只读挂载 |
-| `WGP_SSH_REMOTE_TOOL` | `/root/wireguard/wgagent.py` | 内核脚本落点 |
-| `WGP_IFACE` | `wg0` | 接口名 |
-| `WGP_ADMIN_PASSWORD` | — | 仅首次启动用于初始化，之后在界面改 |
+实际上只需要两个变量；其余都有默认值，而且都能在面板里改（面板里改过的值会覆盖 env）。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WGP_ADMIN_PASSWORD` | `admin` | 仅首次启动用于初始化账号，之后在界面改 |
 | `WGP_SECRET_KEY` | 随机 | 会话签名，建议固定为随机串 |
-| `WGP_DATA_DIR` | `./data` | SQLite 位置 |
+| `WGP_DATA_DIR` | `./data` | 面板数据目录（SQLite + 上传的密钥/口令） |
+| `WGP_READ_ONLY` | `0` | 也可在面板里切换 |
+
+以下变量只是**初始值**，通常不需要设置（在「连接设置」里改更省事）：
+`WGP_DRIVER`(`ssh`)、`WGP_IFACE`(`wg0`)、`WGP_SSH_HOST`、`WGP_SSH_USER`(`root`)、
+`WGP_SSH_PORT`(`22`)、`WGP_SSH_AUTH`(`key`/`password`)、`WGP_SSH_KEY`、`WGP_SSH_REMOTE_TOOL`。
 
 ## 安全约定
 

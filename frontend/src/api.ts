@@ -114,7 +114,15 @@ export interface ConnSettings {
   ssh_user: string
   ssh_remote_tool: string
   agent_path: string
-  key: { path: string; uploaded: boolean; fingerprint: string; managed: boolean }
+  ssh_auth: 'key' | 'password'
+  password: { path: string; set: boolean; managed: boolean }
+  key: {
+    path: string
+    uploaded: boolean
+    fingerprint: string
+    public_line: string
+    managed: boolean
+  }
   problems: string[]
 }
 
@@ -129,7 +137,6 @@ export interface Status {
 
 export const api = {
   health: () => req<{ ok: boolean; driver: string; read_only: boolean }>('/health'),
-  authState: () => req<{ initialized: boolean }>('/auth/state'),
   login: (username: string, password: string) =>
     req<{ ok: boolean }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => req<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
@@ -162,6 +169,18 @@ export const api = {
     req<{ uploaded: boolean; path: string; fingerprint: string }>('/settings/ssh-key', {
       method: 'POST',
       body: JSON.stringify({ private_key: privateKey }),
+    }),
+  uploadSshPassword: (password: string) =>
+    req<{ saved: boolean; path: string }>('/settings/ssh-password', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+  authState: () => req<{ initialized: boolean; must_change: boolean; default_hint: string }>('/auth/state'),
+  me: () => req<{ username: string; must_change: boolean }>('/auth/me'),
+  updateAccount: (body: { old_password: string; username?: string; new_password?: string }) =>
+    req<{ ok: boolean; changed: boolean; username: string; relogin?: boolean }>('/auth/account', {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
   testConnection: () =>
     req<{ ok: boolean; error?: string; peers?: number; online?: number; agent_redeployed?: boolean }>(

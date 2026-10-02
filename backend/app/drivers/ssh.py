@@ -1,13 +1,14 @@
 """SSH 驱动：纳管云端的中转节点。
 
 要点：
-- 只用密钥登录，永不口令
+- 支持密钥与口令两种认证（口令只从 600 权限的文件里读，不进 argv、不回显）
 - 首次连接自动下发 wgagent.py（sha256 比对，走 stdin 不经 argv）
 - 远端输出的 stderr 一律脱敏后再往上抛
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import re
 from pathlib import Path
@@ -18,10 +19,40 @@ from .base import ExecutorError, parse_agent_output
 
 SECRET_RE = re.compile(r"(PrivateKey|PresharedKey)\s*=\s*\S+", re.I)
 
+KEY_CLASSES = (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey)
+
 
 def scrub(text: str) -> str:
     """远端报错可能整段回显配置，先把密钥形状的东西抹掉。"""
     return SECRET_RE.sub(r"\1 = <redacted>", text or "")
+
+
+def load_pkey(path: str):
+    p = Path(path).expanduser()
+    if not p.exists():
+        return None
+    for cls in KEY_CLASSES:
+        try:
+            return cls.from_private_key_file(str(p))
+        except Exception:
+            continue
+    return None
+
+
+def key_fingerprint(path: str) -> str:
+    """OpenSSH 风格指纹（SHA256:…），与 `ssh-keygen -lf 私钥` 显示的一致。"""
+    k = load_pkey(path)
+    if not k:
+        return ""
+    return "SHA256:" + base64.b64encode(hashlib.sha256(k.asbytes()).digest()).decode().rstrip("=")
+
+
+def key_public_line(path: str) -> str:
+    """`ssh-ed25519 AAAA…` 形式，方便拿去和服务端 authorized_keys 对账。"""
+    k = load_pkey(path)
+    if not k:
+        return ""
+    return f"{k.get_name()} {k.get_base64()}"
 
 
 class SshExecutor:
@@ -34,12 +65,21 @@ class SshExecutor:
         path = Path(self.s.ssh_key).expanduser()
         if not path.exists():
             raise ExecutorError(f"SSH 私钥不存在：{path}（需只读挂载且权限 600）")
-        for cls in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
-            try:
-                return cls.from_private_key_file(str(path))
-            except Exception:
-                continue
-        raise ExecutorError(f"无法解析私钥：{path}（支持 ed25519 / rsa / ecdsa）")
+        key = load_pkey(str(path))
+        if not key:
+            raise ExecutorError(f"无法解析私钥：{path}（支持 ed25519 / rsa / ecdsa）")
+        return key
+
+    def _password(self) -> str:
+        """口令只从 600 权限的文件读，避免进 argv / 日志 / 数据库明文。"""
+        path = Path(getattr(self.s, "ssh_password_file", "") or "").expanduser()
+        if not path or not path.exists():
+            raise ExecutorError("当前用口令登录，但还没有设置口令（去「连接设置」里填）")
+        return path.read_text(encoding="utf-8").rstrip("\n")
+
+    @property
+    def auth_mode(self) -> str:
+        return (getattr(self.s, "ssh_auth", "key") or "key").lower()
 
     def connect(self) -> paramiko.SSHClient:
         if self._client:
@@ -49,19 +89,24 @@ class SshExecutor:
         if kh and Path(kh).exists():
             cli.load_host_keys(str(kh))
         cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        kwargs = dict(
+            hostname=self.s.ssh_host,
+            port=self.s.ssh_port,
+            username=self.s.ssh_user,
+            timeout=self.s.ssh_timeout,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+        if self.auth_mode == "password":
+            kwargs["password"] = self._password()
+            kwargs["look_for_keys"] = False
+        else:
+            kwargs["pkey"] = self._pkey()
         try:
-            cli.connect(
-                hostname=self.s.ssh_host,
-                port=self.s.ssh_port,
-                username=self.s.ssh_user,
-                pkey=self._pkey(),
-                timeout=self.s.ssh_timeout,
-                allow_agent=False,
-                look_for_keys=False,
-            )
+            cli.connect(**kwargs)
         except Exception as exc:
             raise ExecutorError(f"SSH 连接失败（{self.s.ssh_user}@{self.s.ssh_host}:"
-                               f"{self.s.ssh_port}）：{scrub(str(exc))}")
+                               f"{self.s.ssh_port}，{self.auth_mode} 认证）：{scrub(str(exc))}")
         self._client = cli
         return cli
 

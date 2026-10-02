@@ -1,6 +1,7 @@
-"""配置：全部从环境变量读，代码里零明文。
+"""配置：环境变量只提供「初始值」，运行时以面板里保存的连接设置为准。
 
-镜像里不存任何凭证：SSH 私钥靠只读挂载，管理员口令靠 env 注入或从 Vaultwarden 取。
+镜像里不存任何凭证：SSH 私钥/口令由用户在面板里上传（落盘 600），或只读挂载进来。
+只有初始管理员口令与会话密钥来自 env。
 """
 
 from __future__ import annotations
@@ -15,11 +16,15 @@ def _env(key: str, default: str = "") -> str:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+# 首次启动、且没有提供 WGP_ADMIN_PASSWORD 时用的初始口令（登录后应立刻改掉）
+DEFAULT_ADMIN_USER = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin"
+
 
 class Settings:
     def __init__(self) -> None:
         # 驱动：ssh（生产，纳管云端中转节点） / mock（本地开发与前端联调）
-        self.driver: str = _env("WGP_DRIVER", "mock").lower()
+        self.driver: str = _env("WGP_DRIVER", "ssh").lower()
         self.read_only: bool = _env("WGP_READ_ONLY", "0") == "1"
 
         self.iface: str = _env("WGP_IFACE", "wg0")
@@ -33,9 +38,14 @@ class Settings:
         self.ssh_remote_tool: str = _env("WGP_SSH_REMOTE_TOOL", "/root/wireguard/wgagent.py")
         self.ssh_timeout: int = int(_env("WGP_SSH_TIMEOUT", "20") or 20)
         self.known_hosts: str = _env("WGP_KNOWN_HOSTS", "")
+        # 认证方式：key（默认，推荐） / password
+        self.ssh_auth: str = (_env("WGP_SSH_AUTH", "key") or "key").lower()
 
         # 面板自身
         self.data_dir: Path = Path(_env("WGP_DATA_DIR", "./data"))
+        # 口令只从 600 权限的文件读，不进 DB 明文
+        self.ssh_password_file: str = _env(
+            "WGP_SSH_PASSWORD_FILE", str(self.data_dir / "keys" / "ssh_password"))
         self.admin_password: str = _env("WGP_ADMIN_PASSWORD", "")
         self.secret_key: str = _env("WGP_SECRET_KEY", "")
         self.session_hours: int = int(_env("WGP_SESSION_HOURS", "12") or 12)
@@ -44,6 +54,7 @@ class Settings:
     TUNABLE = {
         "driver", "read_only", "iface", "ssh_host", "ssh_user", "ssh_port",
         "ssh_key", "ssh_remote_tool", "ssh_timeout", "known_hosts", "agent_path",
+        "ssh_auth", "ssh_password_file",
     }
 
     def apply(self, data: dict) -> None:
@@ -59,9 +70,12 @@ class Settings:
         """启动自检：只报告问题，不抛异常（面板要能起来告诉你哪里错了）。"""
         problems = []
         if self.driver == "ssh" and not self.ssh_host:
-            problems.append("WGP_DRIVER=ssh 但没给 WGP_SSH_HOST")
-        if self.driver == "ssh" and not Path(self.ssh_key).exists():
-            problems.append(f"SSH 私钥不存在：{self.ssh_key}（应只读挂载，权限 600）")
+            problems.append("还没配置中转节点地址——去「连接设置」填上服务地址（Endpoint）")
+        using_password = self.ssh_auth == "password"
+        if self.driver == "ssh" and not using_password and not Path(self.ssh_key).exists():
+            problems.append(f"SSH 私钥不存在：{self.ssh_key}（只读挂载，或在「连接设置」里上传）")
+        if self.driver == "ssh" and using_password and not Path(self.ssh_password_file).exists():
+            problems.append("选了口令登录但还没设置口令——去「连接设置」里填")
         if not Path(self.agent_path).exists():
             problems.append(f"找不到 wgagent.py：{self.agent_path}")
         if not self.secret_key:

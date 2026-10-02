@@ -1,29 +1,22 @@
-# 示例配置：全部是占位符，真实值只写在部署机上（不入库）
+# wg-panel 部署示例
+#
+# 这里只放「面板自己」需要的东西：端口、数据卷、初始账号。
+# 中转节点地址、SSH 凭证（密钥或口令）、接口名、隧道参数……全部在面板的
+# 「连接设置」里填，不用回来改这个文件。
 services:
   wg-panel:
-    image: xueayis/wg-panel:0.1.0
+    image: xueayis/wg-panel:latest
     container_name: wg-panel
     restart: unless-stopped
     ports:
-      - "13010:8000"          # 面板端口，按 NAS 上已占用的改
+      - "13010:8000"          # 面板端口，按需改
     volumes:
-      - ./data:/data          # 面板自身数据（SQLite：管理员凭据 + 审计日志）
-      - ./ssh:/ssh:ro         # SSH 私钥目录，只读挂载，私钥权限 600
+      - ./data:/data          # 面板数据：账号、连接设置、审计日志、上传的密钥
     environment:
-      # 驱动：ssh=纳管云端中转节点；mock=本地演示（不连真实节点）
-      WGP_DRIVER: ssh
-      # 上线首日建议开着，确认纳管无误后再去掉
-      WGP_READ_ONLY: "0"
-
-      WGP_SSH_HOST: 203.0.113.10         # 中转节点地址（示例段，换成你自己的）
-      WGP_SSH_USER: root
-      WGP_SSH_PORT: "22"
-      WGP_SSH_KEY: /ssh/id_ed25519
-      WGP_SSH_REMOTE_TOOL: /root/wireguard/wgagent.py
-      WGP_IFACE: wg0
-
-      # 首次启动用它初始化管理员，之后改口令在界面里改（env 只在首次生效）
+      # 初始管理员口令：只在第一次启动时用于初始化（用户名 admin）。
+      # 不填则默认 admin / admin，登录后请立刻在面板里改掉。
       WGP_ADMIN_PASSWORD: __ADMIN_PASSWORD__
       # 会话签名密钥，务必换成随机串：openssl rand -hex 32
       WGP_SECRET_KEY: __SECRET_KEY__
-      WGP_SESSION_HOURS: "12"
+      # 可选：上线首日想先只读观察，就打开下面这行（之后也能在面板里切换）
+      # WGP_READ_ONLY: "1"

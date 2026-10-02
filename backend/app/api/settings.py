@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..drivers.base import ExecutorError
+from ..drivers.ssh import key_fingerprint, key_public_line
 from .deps import current_user, get_executor, reset_executor
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -33,12 +34,16 @@ def _key_path(request: Request) -> Path:
     return Path(settings.data_dir) / KEY_DIR_NAME / "id_ed25519"
 
 
+def _password_path(request: Request) -> Path:
+    return Path(settings.data_dir) / KEY_DIR_NAME / "ssh_password"
+
+
 def _fingerprint(path: str) -> str:
-    """只回指纹，不回私钥内容。"""
+    """只回指纹（OpenSSH 风格 SHA256:…），绝不回私钥内容。"""
     p = Path(path)
     if not p.exists():
         return ""
-    return hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+    return key_fingerprint(str(p)) or hashlib.sha256(p.read_bytes()).hexdigest()[:16]
 
 
 class ConnectionPatch(BaseModel):
@@ -49,15 +54,21 @@ class ConnectionPatch(BaseModel):
     ssh_remote_tool: Optional[str] = Field(default=None, max_length=512)
     iface: Optional[str] = Field(default=None, max_length=32)
     read_only: Optional[bool] = None
+    ssh_auth: Optional[str] = Field(default=None, pattern="^(key|password)$")
 
 
 class KeyUpload(BaseModel):
     private_key: str = Field(min_length=40)
 
 
+class PasswordUpload(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
 @router.get("")
 def get_settings(request: Request, _: str = Depends(current_user)):
     key_path = settings.ssh_key
+    pw_path = settings.ssh_password_file
     return {
         "driver": settings.driver,
         "read_only": settings.read_only,
@@ -67,10 +78,17 @@ def get_settings(request: Request, _: str = Depends(current_user)):
         "ssh_user": settings.ssh_user,
         "ssh_remote_tool": settings.ssh_remote_tool,
         "agent_path": settings.agent_path,
+        "ssh_auth": getattr(settings, "ssh_auth", "key"),
+        "password": {
+            "path": pw_path,
+            "set": bool(pw_path and Path(pw_path).exists()),
+            "managed": str(_password_path(request)) == pw_path,
+        },
         "key": {
             "path": key_path,
             "uploaded": bool(_fingerprint(key_path)),
             "fingerprint": _fingerprint(key_path),
+            "public_line": key_public_line(key_path),
             "managed": str(_key_path(request)) == key_path,
         },
         "problems": settings.validate(),
@@ -109,6 +127,21 @@ def upload_key(body: KeyUpload, request: Request, _: str = Depends(current_user)
     reset_executor()
     _store(request).audit("settings.ssh_key", str(dst), "ok", f"指纹 {_fingerprint(str(dst))}")
     return {"uploaded": True, "path": str(dst), "fingerprint": _fingerprint(str(dst))}
+
+
+@router.post("/ssh-password")
+def upload_password(body: PasswordUpload, request: Request, _: str = Depends(current_user)):
+    """上传 SSH 登录口令。只落盘（600），接口不回显。"""
+    dst = _password_path(request)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(dst.parent, 0o700)
+    dst.write_text(body.password, encoding="utf-8")
+    os.chmod(dst, 0o600)
+    _store(request).put_settings({"ssh_password_file": str(dst), "ssh_auth": "password"})
+    settings.apply({"ssh_password_file": str(dst), "ssh_auth": "password"})
+    reset_executor()
+    _store(request).audit("settings.ssh_password", str(dst), "ok", "设置 SSH 口令（不回显）")
+    return {"saved": True, "path": str(dst)}
 
 
 @router.post("/test")

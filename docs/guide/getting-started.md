@@ -90,29 +90,22 @@ sudo systemctl enable --now wg-quick@wg0
 在跑 Docker 的机器上（比如 NAS）：
 
 ```bash
-mkdir -p wg-panel/ssh && cd wg-panel
-cp <能登录中转节点的私钥> ssh/id_ed25519 && chmod 600 ssh/id_ed25519
-curl -O https://raw.githubusercontent.com/xueayis/wg-panel/main/docker-compose.example.yml \
-  -o docker-compose.yml    # 或者手动复制仓库里的 docker-compose.example.yml
+mkdir -p wg-panel && cd wg-panel
+# 从仓库取一份 compose 示例（或手动复制 docker-compose.example.yml）
+curl -O https://raw.githubusercontent.com/xueayi/wg-panel/main/docker-compose.example.yml
+mv docker-compose.example.yml docker-compose.yml
 ```
 
-编辑 `docker-compose.yml`，只需要改这几行：
+compose 里**只有面板自己**的配置，改两行就够：
 
 ```yaml
 environment:
-  WGP_DRIVER: ssh                  # 纳管真实节点
-  WGP_SSH_HOST: 203.0.113.10       # ← 换成你中转节点的公网地址
-  WGP_SSH_PORT: "22"               # ← SSH 端口
-  WGP_ADMIN_PASSWORD: __ADMIN_PASSWORD__   # ← 面板登录口令（只首次生效，建议 openssl rand -base64 18）
+  WGP_ADMIN_PASSWORD: __ADMIN_PASSWORD__   # ← 初始口令（不填则 admin/admin，登录后立刻改）
   WGP_SECRET_KEY: __SECRET_KEY__           # ← openssl rand -hex 32
 ```
 
-| 变量 | 说明 |
-|---|---|
-| `WGP_SSH_KEY` | 私钥在容器内的路径，默认 `/ssh/id_ed25519`（对应上面的只读挂载） |
-| `WGP_SSH_USER` | 需要能读写 `/etc/wireguard`，通常是 `root` |
-| `WGP_SSH_REMOTE_TOOL` | 面板内核脚本在节点上的落点，默认 `/root/wireguard/wgagent.py` |
-| `WGP_READ_ONLY` | `1` = 面板只显示不修改（上线首日验证用），确认无误后改 `0` |
+> 中转节点地址、SSH 凭证、接口名……**都不在这里填**，启动后在面板的「连接设置」里配。
+> 也不需要在部署机上准备私钥目录——私钥可以在面板里粘贴上传。
 
 启动：
 
@@ -120,10 +113,12 @@ environment:
 docker compose up -d
 ```
 
-浏览器打开 `http://<部署机IP>:13010`，用户名 `admin`，口令就是你刚填的 `WGP_ADMIN_PASSWORD`。
+浏览器打开 `http://<部署机IP>:13010`，登录：初始账号 **`admin` / `admin`**
+（若你填了 `WGP_ADMIN_PASSWORD`，口令就是它）。
 
-> 📌 **口令只在这第一次生效**：它被写入面板数据库的哈希后就与 env 无关了，
-> 之后改口令请走「连接设置」页。忘了口令的话，删掉数据库里的 admin 记录再重启即可重新初始化
+> 📌 **口令只在这第一次生效**：它被写入面板数据库的哈希后就与 env 无关了。
+> 还在用初始口令时，登录后顶栏会一直提醒，去「连接设置」→「**面板账号**」改成自己的用户名和口令即可。
+> 忘了口令的话，删掉数据库里的 admin 记录再重启即可重新初始化
 > （`docker compose exec wg-panel python -c "import sqlite3;c=sqlite3.connect('/data/panel.db');c.execute('DELETE FROM admin');c.commit()"`）。
 
 ### 进面板第一件事：核对「连接设置」
@@ -134,6 +129,7 @@ docker compose up -d
 |---|---|
 | 服务地址（Endpoint） | 中转节点的公网地址——客户端最终连的就是它 |
 | SSH 端口 / 用户 | 面板登节点用的，用户需要能读写 `/etc/wireguard`（通常 `root`） |
+| 登录方式 | **密钥**或**口令**：密钥粘贴上传（面板只回指纹，可用于核对）；口令只写进 600 权限的文件、不回显 |
 | WireGuard 接口名 | 默认 `wg0` |
 | SSH 私钥 | 显示"已就绪"才算配好；没有就粘贴私钥上传（面板落盘 600，只回指纹） |
 

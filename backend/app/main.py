@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import auth, peers, server, system
 from .api import settings as settings_api
-from .config import settings
+from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USER, settings
 from .drivers.base import ExecutorError
 from .security import hash_password
 from .services.store import Store
@@ -32,8 +32,15 @@ def create_app() -> FastAPI:
     app.state.secret = settings.secret_key or secrets.token_hex(32)
 
     # 首次启动：把 env 里注入的口令变成哈希存进 SQLite，之后 env 不再需要
-    if settings.admin_password and not app.state.store.get_admin():
-        app.state.store.set_admin("admin", hash_password(settings.admin_password))
+    if not app.state.store.get_admin():
+        pw = settings.admin_password or DEFAULT_ADMIN_PASSWORD
+        app.state.store.set_admin(DEFAULT_ADMIN_USER, hash_password(pw))
+        if pw == DEFAULT_ADMIN_PASSWORD:
+            app.state.store.put_settings({"must_change_password": "1"})
+            log.warning("面板用默认账号 %s/%s 初始化，登录后请立即在面板里改掉",
+                        DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASSWORD)
+        else:
+            log.info("已用 WGP_ADMIN_PASSWORD 初始化管理员账号 %s", DEFAULT_ADMIN_USER)
         log.info("已用 WGP_ADMIN_PASSWORD 初始化管理员口令")
 
     # 面板里改过的连接设置覆盖 env 默认值（换节点、改端口不用动 compose）

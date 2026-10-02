@@ -104,6 +104,8 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('overview')
   const [toast, setToast] = useState<{ msg: string; tone: 'ok' | 'err' } | null>(null)
   const [readOnly, setReadOnly] = useState(false)
+  const [mustChange, setMustChange] = useState(false)
+  const [username, setUsername] = useState('admin')
 
   const say = (msg: string, tone: 'ok' | 'err' = 'ok') => setToast({ msg, tone })
 
@@ -111,6 +113,9 @@ export default function App() {
     try {
       const h = await api.health()
       setReadOnly(h.read_only)
+      const who = await api.me().catch(() => null)
+      setUsername(who?.username || 'admin')
+      setMustChange(!!who?.must_change)
       setAuthed(true)
     } catch {
       setAuthed(false)
@@ -167,6 +172,7 @@ export default function App() {
             </svg>
             GitHub
           </a>
+          <span className="hidden text-[13px] text-slate-400 sm:inline">{username}</span>
           <Button
             size="sm"
             onClick={async () => {
@@ -178,6 +184,18 @@ export default function App() {
           </Button>
         </div>
       </header>
+
+      {mustChange && (
+        <div className="flex shrink-0 items-center gap-3 border-b border-amber-200 bg-amber-50 px-5 py-2 text-[13px] text-amber-800">
+          <span>⚠ 你还在使用初始口令（admin / admin），任何人都能登进来。</span>
+          <button
+            onClick={() => setTab('connection')}
+            className="whitespace-nowrap rounded-md bg-white px-2.5 py-1 text-[12px] font-medium text-amber-800 ring-1 ring-amber-300 hover:bg-amber-100"
+          >
+            去「连接设置」修改
+          </button>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <nav className="hidden w-52 shrink-0 border-r border-slate-200 bg-white px-2 py-3 sm:block">
@@ -233,6 +251,15 @@ function Login({ onOk }: { onOk: () => void }) {
   const [user, setUser] = useState('admin')
   const [pass, setPass] = useState('')
   const [err, setErr] = useState('')
+  const [hint, setHint] = useState('')
+
+  useEffect(() => {
+    // 还没改过初始口令时，直接在登录框下方把账号密码告诉用户
+    api
+      .authState()
+      .then((s) => s.must_change && setHint(s.default_hint))
+      .catch(() => null)
+  }, [])
 
   const submit = async () => {
     setErr('')
@@ -258,6 +285,11 @@ function Login({ onOk }: { onOk: () => void }) {
             <div className="mt-0.5 text-[12px] text-slate-400">WireGuard 云端管理</div>
           </div>
         </div>
+        {hint && (
+          <div className="mb-3 rounded-lg bg-indigo-50 px-3 py-2 text-[12px] leading-relaxed text-indigo-700">
+            {hint}
+          </div>
+        )}
         <div className="space-y-3">
           <input className={inputClass} value={user} onChange={(e) => setUser(e.target.value)} placeholder="用户名" />
           <input
