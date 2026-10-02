@@ -78,7 +78,7 @@ def test_login_sets_httponly_cookie(tmp_path, monkeypatch):
 def test_list_peers(client):
     rows = client.get("/api/peers").json()
     assert rows["total"] >= 3
-    assert any(r["name"] == "mac-mini" for r in rows["rows"])
+    assert any(r["name"] == "laptop" for r in rows["rows"])
     assert rows["online"] >= 1
 
 
@@ -94,7 +94,7 @@ def test_create_peer_distributes_ip(client):
 
 
 def test_config_download_is_masked_by_default(client):
-    masked = client.get("/api/peers/mac-mini/config").text
+    masked = client.get("/api/peers/laptop/config").text
     assert "<redacted>" in masked or "PrivateKey = <" in masked
     assert "FAKE" not in masked
 
@@ -103,7 +103,7 @@ def test_config_download_is_masked_by_default(client):
 
 
 def test_qr_returns_png_and_is_audited(client):
-    r = client.get("/api/peers/iphone15/qr")
+    r = client.get("/api/peers/phone/qr")
     assert r.status_code == 200
     assert r.headers["content-type"] == "image/png"
     assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
@@ -119,9 +119,9 @@ def test_delete_requires_confirmation(client):
 
 
 def test_disable_keeps_peer_in_list(client):
-    r = client.patch("/api/peers/mac-mini", json={"enabled": False})
+    r = client.patch("/api/peers/laptop", json={"enabled": False})
     assert r.status_code == 200
-    row = next(p for p in client.get("/api/peers").json()["rows"] if p["name"] == "mac-mini")
+    row = next(p for p in client.get("/api/peers").json()["rows"] if p["name"] == "laptop")
     assert row["disabled"] is True
     assert row["enabled"] is False
 

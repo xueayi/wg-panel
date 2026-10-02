@@ -43,18 +43,19 @@ class MockExecutor:
         self.dns = "192.168.1.1"
         self.mtu = ""
         self.server_pub = "MOCKPUB_SERVER_EXAMPLE"
+        # 纯示例数据：节点名一律中性，不引用任何真实设备
         self.clients: dict[str, dict] = {
-            "mac-mini": {"ip": "10.8.1.12", "tunnel": "lan", "disabled": False,
-                         "note": "家里主力机", "created": "2026-03-29",
-                         "handshake": int(time.time()) - 42, "rx": 4_218_447_360, "tx": 981_206_528},
-            "iphone15": {"ip": "10.8.1.15", "tunnel": "full", "disabled": False,
-                         "note": "手机全局代理", "created": "2026-04-02",
-                         "handshake": int(time.time()) - 900, "rx": 318_444_032, "tx": 92_274_688},
-            "istoreos": {"ip": "10.8.1.3", "tunnel": "lan", "disabled": False,
-                         "note": "旁路由", "created": "2026-03-29",
-                         "handshake": int(time.time()) - 120, "rx": 88_654_208, "tx": 12_884_992},
+            "laptop": {"ip": "10.8.1.12", "tunnel": "lan", "disabled": False,
+                       "note": "示例：笔记本", "created": "2026-03-29",
+                       "handshake": int(time.time()) - 42, "rx": 4_218_447_360, "tx": 981_206_528},
+            "phone": {"ip": "10.8.1.15", "tunnel": "full", "disabled": False,
+                      "note": "示例：手机（全局代理）", "created": "2026-04-02",
+                      "handshake": int(time.time()) - 900, "rx": 318_444_032, "tx": 92_274_688},
+            "home-gw": {"ip": "10.8.1.3", "tunnel": "lan", "disabled": False,
+                        "note": "示例：家里的网关", "created": "2026-03-29",
+                        "handshake": int(time.time()) - 120, "rx": 88_654_208, "tx": 12_884_992},
             "old-laptop": {"ip": "10.8.1.9", "tunnel": "lan", "disabled": True,
-                           "note": "闲置停用", "created": "2025-11-11",
+                           "note": "示例：已停用", "created": "2025-11-11",
                            "handshake": int(time.time()) - 86400 * 40, "rx": 1_048_576, "tx": 524_288},
         }
         self.backups = [
