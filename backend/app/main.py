@@ -31,7 +31,7 @@ def create_app() -> FastAPI:
     app.state.store = Store(settings.data_dir / "panel.db")
     app.state.secret = settings.secret_key or secrets.token_hex(32)
 
-    # 首次启动：把 env 里注入的口令变成哈希存进 SQLite，之后 env 不再需要
+    # 首次启动：把 env 里注入的密码变成哈希存进 SQLite，之后 env 不再需要
     if not app.state.store.get_admin():
         pw = settings.admin_password or DEFAULT_ADMIN_PASSWORD
         app.state.store.set_admin(DEFAULT_ADMIN_USER, hash_password(pw))
@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
                         DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASSWORD)
         else:
             log.info("已用 WGP_ADMIN_PASSWORD 初始化管理员账号 %s", DEFAULT_ADMIN_USER)
-        log.info("已用 WGP_ADMIN_PASSWORD 初始化管理员口令")
+        log.info("已用 WGP_ADMIN_PASSWORD 初始化管理员密码")
 
     # 面板里改过的连接设置覆盖 env 默认值（换节点、改端口不用动 compose）
     overrides = app.state.store.get_settings()

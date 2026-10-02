@@ -95,12 +95,12 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
   }
 
   const uploadPassword = async () => {
-    if (!sshPassword) return onToast('先填口令', 'err')
+    if (!sshPassword) return onToast('先填密码', 'err')
     setBusy('pw')
     try {
       await api.uploadSshPassword(sshPassword)
       setSshPassword('')
-      onToast('口令已保存（只写进 600 权限的文件，接口不回显），认证方式已切到口令')
+      onToast('密码已保存（只写进 600 权限的文件，接口不回显），认证方式已切到密码')
       load()
     } catch (e) {
       onToast((e as Error).message, 'err')
@@ -110,7 +110,7 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
   }
 
   const saveAccount = async () => {
-    if (!oldPw) return onToast('先填当前口令', 'err')
+    if (!oldPw) return onToast('先填当前密码', 'err')
     setBusy('account')
     try {
       const r = await api.updateAccount({
@@ -124,7 +124,7 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
       else if (r.relogin) {
         onToast('账号已更新，请用新用户名重新登录')
         setTimeout(() => location.reload(), 1200)
-      } else onToast('口令已更新')
+      } else onToast('密码已更新')
       load()
     } catch (e) {
       onToast((e as Error).message, 'err')
@@ -169,11 +169,11 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
           <Field label="内核脚本落点" hint="面板把管理脚本放到节点上的位置">
             <input className={inputClass} value={tool} onChange={(e) => setTool(e.target.value)} />
           </Field>
-          <Field label="登录方式" hint="密钥更安全；只有口令能登的机器才用口令">
+          <Field label="登录方式" hint="密钥更安全；只有密码能登的机器才用密码">
             <div className="grid grid-cols-2 gap-2">
               {[
                 { v: 'key' as const, t: '密钥', d: keyReady ? '已就绪' : '未配置' },
-                { v: 'password' as const, t: '口令', d: pwReady ? '已设置' : '未设置' },
+                { v: 'password' as const, t: '密码', d: pwReady ? '已设置' : '未设置' },
               ].map((o) => (
                 <button
                   key={o.v}
@@ -274,26 +274,26 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
         <CardHeader
           title={
             <span className="inline-flex items-center gap-1.5">
-              SSH 口令
-              <Hint text="给只允许口令登录的机器用。口令写进 600 权限的文件，不进数据库、不进日志、接口不回显；填写后认证方式会自动切到「口令」。" />
+              SSH 密码
+              <Hint text="给只允许密码登录的机器用。密码写进 600 权限的文件，不进数据库、不进日志、接口不回显；填写后认证方式会自动切到「密码」。" />
             </span>
           }
-          desc="密钥不方便时用口令登录中转节点。"
+          desc="密钥不方便时用密码登录中转节点。"
           action={pwReady ? <Badge tone="green">已设置</Badge> : <Badge tone="slate">未设置</Badge>}
         />
         <div className="grid gap-4 px-5 py-4 sm:grid-cols-2">
-          <Field label="SSH 口令" hint={pwReady ? '已设置；重新填写会覆盖' : '填写后立即生效'}>
+          <Field label="SSH 密码" hint={pwReady ? '已设置；重新填写会覆盖' : '填写后立即生效'}>
             <input
               className={inputClass}
               type="password"
               value={sshPassword}
               onChange={(e) => setSshPassword(e.target.value)}
-              placeholder={pwReady ? '••••••••（留空表示不修改）' : '输入中转节点的登录口令'}
+              placeholder={pwReady ? '••••••••（留空表示不修改）' : '输入中转节点的登录密码'}
             />
           </Field>
           <div className="flex items-end">
             <Button disabled={busy === 'pw' || !sshPassword} onClick={uploadPassword}>
-              {busy === 'pw' ? '保存中…' : '保存口令并切换认证方式'}
+              {busy === 'pw' ? '保存中…' : '保存密码并切换认证方式'}
             </Button>
           </div>
         </div>
@@ -304,7 +304,7 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
           title={
             <span className="inline-flex items-center gap-1.5">
               面板账号
-              <Hint text="这是登录这个面板用的用户名与口令，和上面的 SSH 凭证无关。改用户名后需要重新登录。" />
+              <Hint text="这是登录这个面板用的用户名与密码，和上面的 SSH 凭证无关。改用户名后需要重新登录。" />
             </span>
           }
           desc={`当前登录：${me}`}
@@ -313,22 +313,22 @@ export default function Connection({ onToast }: { onToast: (m: string, tone?: 'o
           <Field label="用户名">
             <input className={inputClass} value={newUser} onChange={(e) => setNewUser(e.target.value)} placeholder="admin" />
           </Field>
-          <Field label="新口令" hint="至少 8 位；留空表示只改用户名">
+          <Field label="新密码" hint="至少 8 位；留空表示只改用户名">
             <input
               className={inputClass}
               type="password"
               value={newPw}
               onChange={(e) => setNewPw(e.target.value)}
-              placeholder="留空则不改口令"
+              placeholder="留空则不改密码"
             />
           </Field>
-          <Field label="当前口令" hint="需要验证身份">
+          <Field label="当前密码" hint="需要验证身份">
             <input
               className={inputClass}
               type="password"
               value={oldPw}
               onChange={(e) => setOldPw(e.target.value)}
-              placeholder="输入当前口令"
+              placeholder="输入当前密码"
             />
           </Field>
           <div className="sm:col-span-3">

@@ -1,7 +1,7 @@
 """配置：环境变量只提供「初始值」，运行时以面板里保存的连接设置为准。
 
-镜像里不存任何凭证：SSH 私钥/口令由用户在面板里上传（落盘 600），或只读挂载进来。
-只有初始管理员口令与会话密钥来自 env。
+镜像里不存任何凭证：SSH 私钥/密码由用户在面板里上传（落盘 600），或只读挂载进来。
+只有初始管理员密码与会话密钥来自 env。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ def _env(key: str, default: str = "") -> str:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# 首次启动、且没有提供 WGP_ADMIN_PASSWORD 时用的初始口令（登录后应立刻改掉）
+# 首次启动、且没有提供 WGP_ADMIN_PASSWORD 时用的初始密码（登录后应立刻改掉）
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin"
 
@@ -43,7 +43,7 @@ class Settings:
 
         # 面板自身
         self.data_dir: Path = Path(_env("WGP_DATA_DIR", "./data"))
-        # 口令只从 600 权限的文件读，不进 DB 明文
+        # 密码只从 600 权限的文件读，不进 DB 明文
         self.ssh_password_file: str = _env(
             "WGP_SSH_PASSWORD_FILE", str(self.data_dir / "keys" / "ssh_password"))
         self.admin_password: str = _env("WGP_ADMIN_PASSWORD", "")
@@ -75,7 +75,7 @@ class Settings:
         if self.driver == "ssh" and not using_password and not Path(self.ssh_key).exists():
             problems.append(f"SSH 私钥不存在：{self.ssh_key}（只读挂载，或在「连接设置」里上传）")
         if self.driver == "ssh" and using_password and not Path(self.ssh_password_file).exists():
-            problems.append("选了口令登录但还没设置口令——去「连接设置」里填")
+            problems.append("选了密码登录但还没设置密码——去「连接设置」里填")
         if not Path(self.agent_path).exists():
             problems.append(f"找不到 wgagent.py：{self.agent_path}")
         if not self.secret_key:

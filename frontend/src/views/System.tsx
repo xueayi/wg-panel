@@ -17,7 +17,7 @@ const ACTION_LABEL: Record<string, string> = {
   'system.restore': '回滚配置',
   'system.refresh': '重连节点',
   'auth.login': '登录',
-  'auth.password': '修改口令',
+  'auth.password': '修改密码',
 }
 
 function time(ts: number) {

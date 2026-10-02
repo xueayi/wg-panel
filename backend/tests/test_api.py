@@ -41,7 +41,7 @@ def client(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fresh_client(tmp_path):
-    """没配 WGP_ADMIN_PASSWORD 的干净实例：应该用 admin/admin 初始化并提示改口令。"""
+    """没配 WGP_ADMIN_PASSWORD 的干净实例：应该用 admin/admin 初始化并提示改密码。"""
     for mod in [m for m in sys.modules if m.startswith("app")]:
         del sys.modules[mod]
     from app.config import settings
@@ -67,7 +67,7 @@ def test_health_is_public(client):
 
 
 def test_default_account_is_admin_admin(fresh_client):
-    """首次启动没设口令就用 admin/admin，并且明确告诉前端「该改了」。"""
+    """首次启动没设密码就用 admin/admin，并且明确告诉前端「该改了」。"""
     st = fresh_client.get("/api/auth/state").json()
     assert st["initialized"] is True and st["must_change"] is True
     assert "admin / admin" in st["default_hint"]
@@ -83,7 +83,7 @@ def test_update_account_changes_username_and_clears_flag(fresh_client):
         "old_password": "admin", "username": "xue", "new_password": "newpass12345"})
     assert r.status_code == 200 and r.json()["relogin"] is True
 
-    # 新账号能登，旧口令不再可用，且「该改口令」的提示消失
+    # 新账号能登，旧密码不再可用，且「该改密码」的提示消失
     assert fresh_client.post("/api/auth/login",
                              json={"username": "xue", "password": "newpass12345"}).status_code == 200
     assert fresh_client.get("/api/auth/state").json()["must_change"] is False
@@ -109,7 +109,7 @@ def test_settings_exposes_auth_modes_and_fingerprint(client):
 def test_upload_ssh_password_switches_auth_and_never_echoes(client, tmp_path):
     r = client.post("/api/settings/ssh-password", json={"password": "s3cr3t-node-pw"})
     assert r.status_code == 200 and r.json()["saved"] is True
-    assert "s3cr3t-node-pw" not in r.text, "接口绝不能回显口令"
+    assert "s3cr3t-node-pw" not in r.text, "接口绝不能回显密码"
 
     s = client.get("/api/settings").json()
     assert s["ssh_auth"] == "password" and s["password"]["set"] is True

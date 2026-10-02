@@ -18,16 +18,16 @@
 
 ```bash
 cp docker-compose.example.yml docker-compose.yml
-# 只需改两处：WGP_ADMIN_PASSWORD（初始口令）、WGP_SECRET_KEY（openssl rand -hex 32）
+# 只需改两处：WGP_ADMIN_PASSWORD（初始密码）、WGP_SECRET_KEY（openssl rand -hex 32）
 docker compose up -d
 ```
 
 浏览器打开 `http://<部署机IP>:13010`，初始账号 **`admin` / `admin`**，然后：
 
-**「连接设置」→ 填中转节点地址 + SSH 凭证（密钥或口令）→ 点「测试连接」** —— 就这三步。
+**「连接设置」→ 填中转节点地址 + SSH 凭证（密钥或密码）→ 点「测试连接」** —— 就这三步。
 节点相关的一切都在面板里配，不用改 compose、也不用在部署机上放私钥。
 
-> 忘了口令？改过初始口令后顶栏会一直提醒；重置方法见教程。
+> 忘了密码？改过初始密码后顶栏会一直提醒；重置方法见教程。
 
 ## 功能
 
@@ -48,7 +48,7 @@ docker compose up -d
 
 - **登记表是权威数据**，`wg0.conf` 是它渲染出来的产物；变更一律走 `wg syncconf`（原子、不断线），写前自动备份
 - **WireGuard 语义只在 [`agent/wgagent.py`](agent/wgagent.py) 实现一次**，面板侧不重写第二份渲染/同步逻辑
-- 私钥与口令只落盘 600 文件，接口只回**指纹**（OpenSSH 风格 `SHA256:…`）；破坏性操作需二次确认
+- 私钥与密码只落盘 600 文件，接口只回**指纹**（OpenSSH 风格 `SHA256:…`）；破坏性操作需二次确认
 
 ## 环境变量
 
@@ -56,7 +56,7 @@ docker compose up -d
 
 | 变量 | 说明 |
 |---|---|
-| `WGP_ADMIN_PASSWORD` | 初始口令，仅**第一次启动**用于初始化账号 |
+| `WGP_ADMIN_PASSWORD` | 初始密码，仅**第一次启动**用于初始化账号 |
 | `WGP_SECRET_KEY` | 会话签名密钥，建议 `openssl rand -hex 32` |
 
 节点地址、SSH 端口/用户、认证方式、接口名等见 `.env.example`（只是初始值，在「连接设置」里改更省事）。

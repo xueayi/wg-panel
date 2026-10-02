@@ -131,7 +131,7 @@ def upload_key(body: KeyUpload, request: Request, _: str = Depends(current_user)
 
 @router.post("/ssh-password")
 def upload_password(body: PasswordUpload, request: Request, _: str = Depends(current_user)):
-    """上传 SSH 登录口令。只落盘（600），接口不回显。"""
+    """上传 SSH 登录密码。只落盘（600），接口不回显。"""
     dst = _password_path(request)
     dst.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(dst.parent, 0o700)
@@ -140,7 +140,7 @@ def upload_password(body: PasswordUpload, request: Request, _: str = Depends(cur
     _store(request).put_settings({"ssh_password_file": str(dst), "ssh_auth": "password"})
     settings.apply({"ssh_password_file": str(dst), "ssh_auth": "password"})
     reset_executor()
-    _store(request).audit("settings.ssh_password", str(dst), "ok", "设置 SSH 口令（不回显）")
+    _store(request).audit("settings.ssh_password", str(dst), "ok", "设置 SSH 密码（不回显）")
     return {"saved": True, "path": str(dst)}
 
 

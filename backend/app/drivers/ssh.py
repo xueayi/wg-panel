@@ -1,7 +1,7 @@
 """SSH 驱动：纳管云端的中转节点。
 
 要点：
-- 支持密钥与口令两种认证（口令只从 600 权限的文件里读，不进 argv、不回显）
+- 支持密钥与密码两种认证（密码只从 600 权限的文件里读，不进 argv、不回显）
 - 首次连接自动下发 wgagent.py（sha256 比对，走 stdin 不经 argv）
 - 远端输出的 stderr 一律脱敏后再往上抛
 """
@@ -71,10 +71,10 @@ class SshExecutor:
         return key
 
     def _password(self) -> str:
-        """口令只从 600 权限的文件读，避免进 argv / 日志 / 数据库明文。"""
+        """密码只从 600 权限的文件读，避免进 argv / 日志 / 数据库明文。"""
         path = Path(getattr(self.s, "ssh_password_file", "") or "").expanduser()
         if not path or not path.exists():
-            raise ExecutorError("当前用口令登录，但还没有设置口令（去「连接设置」里填）")
+            raise ExecutorError("当前用密码登录，但还没有设置密码（去「连接设置」里填）")
         return path.read_text(encoding="utf-8").rstrip("\n")
 
     @property

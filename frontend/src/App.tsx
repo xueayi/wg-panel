@@ -187,7 +187,7 @@ export default function App() {
 
       {mustChange && (
         <div className="flex shrink-0 items-center gap-3 border-b border-amber-200 bg-amber-50 px-5 py-2 text-[13px] text-amber-800">
-          <span>⚠ 你还在使用初始口令（admin / admin），任何人都能登进来。</span>
+          <span>⚠ 你还在使用初始密码（admin / admin），任何人都能登进来。</span>
           <button
             onClick={() => setTab('connection')}
             className="whitespace-nowrap rounded-md bg-white px-2.5 py-1 text-[12px] font-medium text-amber-800 ring-1 ring-amber-300 hover:bg-amber-100"
@@ -254,7 +254,7 @@ function Login({ onOk }: { onOk: () => void }) {
   const [hint, setHint] = useState('')
 
   useEffect(() => {
-    // 还没改过初始口令时，直接在登录框下方把账号密码告诉用户
+    // 还没改过初始密码时，直接在登录框下方把账号密码告诉用户
     api
       .authState()
       .then((s) => s.must_change && setHint(s.default_hint))
@@ -298,7 +298,7 @@ function Login({ onOk }: { onOk: () => void }) {
             value={pass}
             onChange={(e) => setPass(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
-            placeholder="口令"
+            placeholder="密码"
           />
           {err && <div className="rounded-lg bg-red-50 px-3 py-2 text-[13px] text-red-700">{err}</div>}
           <Button variant="primary" className="w-full" onClick={submit}>
