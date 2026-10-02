@@ -116,6 +116,10 @@ class SshExecutor:
         code, out, err = self._exec(cmd)
         # agent 用退出码表达「体检有问题」（doctor 发现问题时返回 1），不是「执行失败」。
         # 所以只要 stdout 是合法 JSON 就照常消费，退出码只在解析不出结果时才当错误。
+        if not out.strip():
+            if code == 0:
+                return {}
+            raise ExecutorError(scrub(err.strip() or f"agent 退出码 {code}（无输出）"))
         try:
             return parse_agent_output(out)
         except ExecutorError:
