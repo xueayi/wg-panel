@@ -144,6 +144,16 @@ def test_manual_duplicate_ip_is_rejected(wg):
     assert "已被" in str(exc.value) and "10.8.1.9" in str(exc.value)
 
 
+def test_adopt_builds_registry_and_rewrites_config(wg):
+    wg["run"]("add", "phone", "--tunnel", "lan")
+    r = wg["run"]("adopt", "--yes")
+    assert r["adopted"] >= 1
+    conf = wg["conf_text"]()
+    assert "SaveConfig = false" in conf, "纳管必须把 SaveConfig 改成 false"
+    assert "# phone" in conf, "重渲染会补回名字注释"
+    assert "phone" in wg["registry"]()["clients"]
+
+
 def test_resign_reports_failure_without_private_key(wg):
     with pytest.raises(AssertionError):
         wg["run"]("resign", "ghost")

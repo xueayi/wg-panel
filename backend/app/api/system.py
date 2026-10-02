@@ -78,9 +78,13 @@ def restore(name: str, request: Request, confirm: bool = Query(False),
 
 @router.post("/adopt")
 def adopt(request: Request, confirm: bool = Query(False), _: str = Depends(current_user_dep)):
-    """首次纳管既有 wg0：把现网 peer 收进登记表。幂等，可重复执行。"""
+    """首次纳管既有 wg0：把现网 peer 收进登记表，并按登记表重渲染配置。
+
+    写前自动备份，SaveConfig 一并改成 false。幂等，可重复执行。
+    """
     if not confirm:
-        raise HTTPException(status_code=428, detail="adopt 会重写 wg0.conf（先自动备份），需要 confirm=true")
+        raise HTTPException(status_code=428,
+                            detail="纳管会重写 wg0.conf（先自动备份），需要 confirm=true")
     out = agent_call(get_executor(), ["adopt", "--yes"], action="system.adopt",
                      confirmed=True, store=_store(request))
     _store(request).audit("system.adopt", "", "ok", "纳管既有配置")
