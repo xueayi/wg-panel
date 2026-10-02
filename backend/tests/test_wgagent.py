@@ -172,6 +172,31 @@ def test_update_site_routes_can_clear(wg):
     assert wg["run"]("show", "gw")["site_routes"] == []
 
 
+def test_every_command_accepts_json_flag(wg):
+    """后端对所有命令统一追加 --json；哪个命令没接住，面板上对应按钮就会报 usage。"""
+    wg["run"]("add", "phone", "--tunnel", "lan")
+    assert wg["run"]("sync").get("synced") is True
+    backups = wg["run"]("backups")
+    assert backups, "备份列表应非空（add 已产生备份）"
+    r = wg["run"]("restore", backups[0]["name"], "--yes")
+    assert r.get("restored") == backups[0]["name"]
+    assert wg["run"]("fix-perms").get("fixed_count") == 0, "权限已正确时应报 0"
+
+
+def test_backup_time_is_east_eight(wg):
+    """备份文件名与 mtime 都应是北京时间（东八区），不是 UTC、也不是源文件的旧时间。"""
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    wg["run"]("add", "phone", "--tunnel", "lan")
+    b = wg["run"]("backups")[0]
+    tz8 = timezone(timedelta(hours=8))
+    assert abs(b["ts"] - time.time()) < 120, "mtime 应是备份发生的时刻"
+    expect = datetime.fromtimestamp(b["ts"], tz8)
+    assert b["mtime"] == expect.strftime("%Y-%m-%d %H:%M:%S")
+    assert b["name"].split(".")[2].startswith(expect.strftime("%Y%m%d-%H"))
+
+
 def test_resign_reports_failure_without_private_key(wg):
     with pytest.raises(AssertionError):
         wg["run"]("resign", "ghost")

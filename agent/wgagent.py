@@ -623,9 +623,13 @@ def cmd_restore(args):
     if not args.yes:
         die(f"即将用 {src.name} 覆盖 {CONF}。确认请加 --yes", 3)
     make_backup("pre-restore")
-    shutil.copy2(src, CONF)
+    shutil.copy(src, CONF)
     os.chmod(CONF, 0o600)
     apply_syncconf()
+    if args.json:
+        print(json.dumps({"restored": src.name, "pre_restore_backup": True},
+                         ensure_ascii=False))
+        return 0
     print(f"已恢复 ← {src}")
     return 0
 
@@ -672,6 +676,10 @@ def do_sync():
 
 def cmd_sync(args):
     do_sync()
+    if args.json:
+        print(json.dumps({"synced": True, "iface": IFACE, "conf": str(CONF)},
+                         ensure_ascii=False))
+        return 0
     print("✅ 已按登记表重渲染并同步到内核")
     return 0
 
@@ -1364,6 +1372,7 @@ def build_parser():
     p.set_defaults(func=cmd_ip_pool)
 
     p = sub.add_parser("sync", help="按登记表重渲染并同步")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_sync)
 
     p = sub.add_parser("render", help="渲染配置文本")
@@ -1388,6 +1397,7 @@ def build_parser():
     p = sub.add_parser("restore", help="恢复备份")
     p.add_argument("file")
     p.add_argument("--yes", action="store_true")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_restore)
 
     p = sub.add_parser("prune", help="列出 / 删除僵尸节点")
