@@ -114,9 +114,14 @@ class SshExecutor:
             argv.append("--json")
         cmd = " ".join(f"'{a}'" for a in argv)
         code, out, err = self._exec(cmd)
-        if code != 0:
+        # agent 用退出码表达「体检有问题」（doctor 发现问题时返回 1），不是「执行失败」。
+        # 所以只要 stdout 是合法 JSON 就照常消费，退出码只在解析不出结果时才当错误。
+        try:
+            return parse_agent_output(out)
+        except ExecutorError:
+            if code == 0:
+                raise
             raise ExecutorError(scrub(err.strip() or out.strip() or f"agent 退出码 {code}"))
-        return parse_agent_output(out)
 
     def describe(self) -> dict:
         return {
