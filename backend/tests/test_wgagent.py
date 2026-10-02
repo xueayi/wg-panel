@@ -154,6 +154,24 @@ def test_adopt_builds_registry_and_rewrites_config(wg):
     assert "phone" in wg["registry"]()["clients"]
 
 
+def test_add_with_site_routes_writes_gateway_cidr(wg):
+    """站点互联：网关节点背后的局域网要写进服务端侧 AllowedIPs。"""
+    r = wg["run"]("add", "home-gw", "--tunnel", "lan", "--site-routes", "192.168.1.0/24")
+    body = wg["conf_text"]()
+    peer_block = body.split("# home-gw")[1]
+    assert "192.168.1.0/24" in peer_block, "网关网段必须渲染进该 peer 的 AllowedIPs"
+
+    detail = wg["run"]("show", "home-gw")
+    assert detail["site_routes"] == ["192.168.1.0/24"]
+
+
+def test_update_site_routes_can_clear(wg):
+    wg["run"]("add", "gw", "--tunnel", "lan", "--site-routes", "192.168.1.0/24")
+    r = wg["run"]("update", "gw", "--site-routes", "")
+    assert r["site_routes"] == [], "传空串应清除网关网段"
+    assert wg["run"]("show", "gw")["site_routes"] == []
+
+
 def test_resign_reports_failure_without_private_key(wg):
     with pytest.raises(AssertionError):
         wg["run"]("resign", "ghost")

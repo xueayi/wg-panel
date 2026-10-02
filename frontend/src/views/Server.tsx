@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { api, IpPool, ServerInfo } from '../api'
-import { Badge, Button, Card, CardHeader, Field, inputClass } from '../components/ui'
+import { api, IpPool, Peer, ServerInfo } from '../api'
+import { Badge, Button, Card, CardHeader, Empty, Field, inputClass } from '../components/ui'
 
 export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' | 'err') => void }) {
   const [info, setInfo] = useState<ServerInfo | null>(null)
   const [pool, setPool] = useState<IpPool | null>(null)
+  const [peerRows, setPeerRows] = useState<Peer[]>([])
   const [endpoint, setEndpoint] = useState('')
   const [lan, setLan] = useState('')
   const [dns, setDns] = useState('')
@@ -14,9 +15,10 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
 
   const load = async () => {
     try {
-      const [s, p] = await Promise.all([api.server(), api.ipPool()])
+      const [s, p, pr] = await Promise.all([api.server(), api.ipPool(), api.peers()])
       setInfo(s)
       setPool(p)
+      setPeerRows(pr.rows)
       setEndpoint(s.advertised_endpoint)
       setLan((s.client_lan_allowed_ips || []).join(', '))
       setDns(s.client_dns || '')
@@ -50,6 +52,7 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
   }
 
   const usedIps = new Set((pool?.used || []).map((u) => u.ip))
+  const siteNodes = peerRows.filter((r) => (r.site_routes || []).length > 0)
 
   return (
     <div className="space-y-5">
@@ -100,6 +103,57 @@ export default function Server({ onToast }: { onToast: (m: string, tone?: 'ok' |
             保存后重签全部客户端配置（含 Endpoint / 网段变更）
           </label>
         </div>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="站点互联"
+          desc="这些节点本身是网关，背后各挂着一个局域网。中转节点靠这些网段知道「包该转给谁」。"
+          action={
+            <Button
+              variant="primary"
+              disabled={!siteNodes.length}
+              onClick={async () => {
+                try {
+                  const r = await api.syncSiteRoutes()
+                  onToast(r.changed
+                    ? '已并入客户端 AllowedIPs 并重签全部配置'
+                    : '站点网段已在客户端 AllowedIPs 中，无需变更')
+                  load()
+                } catch (e) {
+                  onToast((e as Error).message, 'err')
+                }
+              }}
+            >
+              并入客户端并重签
+            </Button>
+          }
+        />
+        {siteNodes.length === 0 ? (
+          <Empty text="还没有节点带局域网网段。在「客户端」页新增或编辑时填写「网关网段」" />
+        ) : (
+          <div className="px-5 py-4">
+            <ul className="space-y-2">
+              {siteNodes.map((r) => (
+                <li key={r.name} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-[13px] font-medium text-slate-800">{r.name}</span>
+                    <span className="font-mono text-[12px] text-slate-400">{r.ip}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {r.site_routes!.map((c) => (
+                      <Badge key={c} tone="green">{c}</Badge>
+                    ))}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-[12px] leading-relaxed text-slate-400">
+              新加站点后要让他们互相访问，得让每个客户端的配置里都包含对方的网段——
+              点右上角一次性并入并重签。被访问侧的网关还要开内核转发与 NAT 伪装。
+            </p>
+          </div>
+        )}
       </Card>
 
       <Card>

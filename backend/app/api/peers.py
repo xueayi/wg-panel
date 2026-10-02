@@ -21,6 +21,7 @@ class PeerCreate(BaseModel):
     tunnel: str = Field(default="lan", pattern="^(lan|full|custom)$")
     ip: Optional[str] = None
     allowed_ips: Optional[str] = None
+    site_routes: Optional[str] = None      # 此节点背后的局域网网段（站点互联）
     dns: Optional[str] = None
     mtu: Optional[int] = None
     note: str = ""
@@ -29,6 +30,7 @@ class PeerCreate(BaseModel):
 class PeerUpdate(BaseModel):
     tunnel: Optional[str] = None
     allowed_ips: Optional[str] = None
+    site_routes: Optional[str] = None
     ip: Optional[str] = None
     note: Optional[str] = None
     enabled: Optional[bool] = None
@@ -57,6 +59,8 @@ def create_peer(body: PeerCreate, request: Request, _: str = Depends(current_use
         args += ["--ip", body.ip]
     if body.allowed_ips:
         args += ["--allowed-ips", body.allowed_ips]
+    if body.site_routes:
+        args += ["--site-routes", body.site_routes]
     if body.dns:
         args += ["--dns", body.dns]
     if body.mtu:
@@ -82,6 +86,8 @@ def update_peer(name: str, body: PeerUpdate, request: Request, _: str = Depends(
         args += ["--tunnel", body.tunnel]
     if body.allowed_ips:
         args += ["--allowed-ips", body.allowed_ips]
+    if body.site_routes is not None:
+        args += ["--site-routes", body.site_routes]
     if body.ip:
         args += ["--ip", body.ip]
     if body.note is not None:

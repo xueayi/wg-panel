@@ -61,7 +61,11 @@ def doctor(request: Request, _: str = Depends(current_user_dep)):
 
 @router.get("/backups")
 def backups(request: Request, _: str = Depends(current_user_dep)):
-    return agent_call(get_executor(), ["backups"], store=_store(request))
+    data = agent_call(get_executor(), ["backups"], store=_store(request))
+    # 契约固定为数组：前端按数组渲染，绝不能回一个包了一层的对象
+    if isinstance(data, dict):
+        return data.get("data", [])
+    return data
 
 
 @router.post("/backups/{name}/restore")

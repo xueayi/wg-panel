@@ -101,6 +101,7 @@ export default function Peers({ onToast }: { onToast: (m: string, tone?: 'ok' | 
                   <th className="px-5 py-2.5 font-medium">客户端</th>
                   <th className="px-5 py-2.5 font-medium">虚拟 IP</th>
                   <th className="px-5 py-2.5 font-medium">隧道</th>
+                  <th className="px-5 py-2.5 font-medium">网关网段</th>
                   <th className="px-5 py-2.5 font-medium">最近握手</th>
                   <th className="px-5 py-2.5 text-right font-medium">↓ 接收</th>
                   <th className="px-5 py-2.5 text-right font-medium">↑ 发送</th>
@@ -124,6 +125,17 @@ export default function Peers({ onToast }: { onToast: (m: string, tone?: 'ok' | 
                       <Badge tone={p.tunnel === 'full' ? 'indigo' : 'slate'}>
                         {TUNNEL_LABEL[p.tunnel] || p.tunnel || '—'}
                       </Badge>
+                    </td>
+                    <td className="px-5 py-3">
+                      {p.site_routes?.length ? (
+                        <div className="flex flex-wrap gap-1">
+                          {p.site_routes.map((c) => (
+                            <Badge key={c} tone="green">{c}</Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-slate-300">—</span>
+                      )}
                     </td>
                     <td className="px-5 py-3 text-slate-500">
                       {p.disabled ? <Badge tone="amber">已停用</Badge> : p.handshake_human}
@@ -181,6 +193,7 @@ function CreateModal({
   const [name, setName] = useState('')
   const [tunnel, setTunnel] = useState('lan')
   const [ip, setIp] = useState('')
+  const [siteRoutes, setSiteRoutes] = useState('')
   const [note, setNote] = useState('')
   const [dns, setDns] = useState('')
   const [busy, setBusy] = useState(false)
@@ -191,6 +204,7 @@ function CreateModal({
     try {
       const body: Record<string, unknown> = { name: name.trim(), tunnel }
       if (ip.trim()) body.ip = ip.trim()
+      if (siteRoutes.trim()) body.site_routes = siteRoutes.trim()
       if (note.trim()) body.note = note.trim()
       if (dns.trim()) body.dns = dns.trim()
       const p = await api.createPeer(body)
@@ -255,6 +269,17 @@ function CreateModal({
             <input className={inputClass} value={dns} onChange={(e) => setDns(e.target.value)} placeholder="192.168.1.1" />
           </Field>
         </div>
+        <Field
+          label="网关网段（可选）"
+          hint="如果这个节点本身是网关、背后还挂着一个局域网（比如家里的路由器），把它那边的网段填在这里。中转节点才知道「去往这个网段的包要交给它」。多个用逗号分隔，普通手机电脑留空"
+        >
+          <input
+            className={inputClass}
+            value={siteRoutes}
+            onChange={(e) => setSiteRoutes(e.target.value)}
+            placeholder="192.168.1.0/24"
+          />
+        </Field>
         <Field label="备注（可选）">
           <input className={inputClass} value={note} onChange={(e) => setNote(e.target.value)} placeholder="谁的设备 / 用途" />
         </Field>

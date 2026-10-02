@@ -1,7 +1,21 @@
+<div align="center">
+
+<img src="frontend/public/logo.png" alt="wg-panel" width="120" />
+
 # wg-panel
+
+**WireGuard 云端可视化管理面板**
+
+[![Docker Image](https://img.shields.io/badge/docker-xueayis%2Fwg--panel-2496ED?logo=docker)](https://hub.docker.com/r/xueayis/wg-panel)
+[![Guide](https://img.shields.io/badge/教程-从零开始接入-4F46E5)](docs/guide/getting-started.md)
+
+</div>
 
 WireGuard 云端可视化管理面板。跑在 Docker 里，通过 SSH 纳管你的中转节点，
 把「配节点、分 IP、发配置」三件事做成界面。
+
+> **🚀 新用户从这里开始：[从零开始接入你的中转节点](docs/guide/getting-started.md)**
+> —— 中转节点一次性准备 → 5 分钟部署 → 纳管 → 手机扫码导入 → 站点互联，全套走完。
 
 面板**不承载任何 VPN 流量**——它只是遥控器，隧道仍然是 客户端 ↔ 中转节点。
 

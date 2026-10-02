@@ -351,6 +351,7 @@ def view() -> dict:
             "enabled": not disabled,
             "disabled": disabled,
             "allowed_ips": allowed,
+            "site_routes": [a for a in allowed if a != f"{ip}/32"],
             "endpoint": l.get("endpoint") or rc.get("endpoint") or conf.get("endpoint", ""),
             "state": state,
             "handshake": hs,
@@ -639,6 +640,19 @@ def gen_keypair() -> tuple[str, str]:
     return priv, pub
 
 
+def site_routes_of(c: dict) -> list[str]:
+    """peer 背后的局域网网段 = 服务端侧 AllowedIPs 里除「虚拟 IP/32」之外的部分。
+
+    这是站点互联（site-to-site）的关键：中转节点靠它知道「去 192.168.1.x 的包要交给谁」。
+    """
+    own = f"{c.get('ip', '')}/32"
+    return [a for a in c.get("allowed_ips", []) if a and a != own]
+
+
+def peer_allowed_ips(ip: str, site_routes: list[str]) -> list[str]:
+    return [f"{ip}/32"] + list(site_routes)
+
+
 def client_allowed_for(reg: dict, c: dict) -> list[str]:
     """客户端侧 AllowedIPs（与服务端 peer 的 ip/32 是两套东西，别混）。"""
     t = (c.get("tunnel") or "lan").lower()
@@ -715,10 +729,11 @@ def cmd_add(args):
     (CLIENTS / f"{name}.conf").write_text(conf_text, encoding="utf-8")
     os.chmod(CLIENTS / f"{name}.conf", 0o600)
 
+    site_routes = parse_allowed_ips(args.site_routes) if args.site_routes else []
     clients[name] = {
         "pubkey": pub,
         "ip": ip,
-        "allowed_ips": [f"{ip}/32"],
+        "allowed_ips": peer_allowed_ips(ip, site_routes),
         "client_allowed_ips": list(allowed),
         "endpoint": "",
         "tunnel": tunnel,
@@ -946,7 +961,9 @@ def cmd_update(args):
         if owner and not args.force:
             die(f"IP {args.ip} 已被 {owner} 占用（强行改加 --force）", 1)
         c["ip"] = args.ip
-        c["allowed_ips"] = [f"{args.ip}/32"]
+        c["allowed_ips"] = peer_allowed_ips(args.ip, site_routes_of(c))
+    if args.site_routes is not None:
+        c["allowed_ips"] = peer_allowed_ips(c["ip"], parse_allowed_ips(args.site_routes))
     if args.note is not None:
         c["note"] = args.note
 
@@ -956,6 +973,7 @@ def cmd_update(args):
 
     payload = {"name": args.name, "ip": c["ip"], "tunnel": c.get("tunnel", ""),
                "client_allowed_ips": client_allowed_for(reg, c),
+               "site_routes": site_routes_of(c),
                "note": c.get("note", ""), "resigned": resigned}
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -1206,6 +1224,8 @@ def build_parser():
     p.add_argument("--dns", help="下发给客户端的 DNS")
     p.add_argument("--mtu", type=int)
     p.add_argument("--ip", help="手工指定 IP")
+    p.add_argument("--site-routes", help="此节点背后的局域网网段，逗号分隔（站点互联用），"
+                                         "如：192.168.1.0/24")
     p.add_argument("--note")
     p.add_argument("--force", action="store_true", help="覆盖同名客户端")
     p.add_argument("--qr", action="store_true", help="顺便打印二维码")
@@ -1227,6 +1247,7 @@ def build_parser():
     p.add_argument("--tunnel", choices=["lan", "full", "custom"])
     p.add_argument("--allowed-ips", help="客户端侧 AllowedIPs（隧道模式为 custom 时生效）")
     p.add_argument("--ip", help="改虚拟 IP")
+    p.add_argument("--site-routes", help="此节点背后的局域网网段，逗号分隔；传空串表示清除")
     p.add_argument("--note")
     p.add_argument("--force", action="store_true", help="强制占用已被使用的 IP")
     p.add_argument("--json", action="store_true")

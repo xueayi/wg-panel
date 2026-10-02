@@ -28,16 +28,19 @@ def is_write(args: list[str]) -> bool:
     return bool(args) and args[0] not in READ_ONLY_COMMANDS
 
 
-def parse_agent_output(stdout: str) -> dict:
-    """agent 的 stdout 必须是纯 JSON；不是就说明命令用错了。"""
+def parse_agent_output(stdout: str) -> dict | list:
+    """agent 的 stdout 必须是纯 JSON；不是就说明命令用错了。
+
+    数组（如 backups）原样返回，不要包一层 {"data": ...}——前端按数组消费，
+    包一层会让 .map 崩掉并把整页打白。
+    """
     text = stdout.strip()
     if not text:
         return {}
     try:
-        data = json.loads(text)
+        return json.loads(text)
     except json.JSONDecodeError as exc:
         raise ExecutorError(f"agent 输出不是合法 JSON：{exc}；原始输出前 200 字符：{text[:200]}")
-    return data if isinstance(data, dict) else {"data": data}
 
 
 class Executor(Protocol):

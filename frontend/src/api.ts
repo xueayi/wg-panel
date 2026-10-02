@@ -50,6 +50,7 @@ export interface Peer {
   rx: number
   tx: number
   client_allowed_ips?: string[]
+  site_routes?: string[]
   conf_text?: string
 }
 
@@ -107,6 +108,9 @@ export const api = {
     req<Record<string, unknown>>('/server', { method: 'PATCH', body: JSON.stringify(body) }),
   ipPool: () => req<IpPool>('/ip-pool'),
   doctor: () => req<{ problems: string[]; warnings: string[] }>('/doctor'),
+  syncSiteRoutes: () =>
+    req<{ changed: boolean; site_routes: string[]; client_lan_allowed_ips: string[] }>(
+      '/sync-site-routes?confirm=true', { method: 'POST' }),
 
   peers: () => req<{ rows: Peer[]; total: number; online: number; disabled: number }>('/peers'),
   peer: (name: string) => req<Peer>(`/peers/${name}`),
@@ -119,7 +123,11 @@ export const api = {
   configUrl: (name: string, reveal = false) => `/api/peers/${name}/config${reveal ? '?reveal=true' : ''}`,
   qrUrl: (name: string) => `/api/peers/${name}/qr`,
 
-  backups: () => req<Backup[]>('/backups'),
+  backups: async (): Promise<Backup[]> => {
+    const d = await req<Backup[] | { data: Backup[] }>('/backups')
+    // 契约是数组；万一后端回包了一层，也不能让页面崩
+    return Array.isArray(d) ? d : (d?.data ?? [])
+  },
   restore: (name: string) => req<Record<string, unknown>>(`/backups/${name}/restore?confirm=true`, { method: 'POST' }),
   adopt: () => req<Record<string, unknown>>('/adopt?confirm=true', { method: 'POST' }),
   refresh: () => req<Record<string, unknown>>('/connect/refresh', { method: 'POST' }),
