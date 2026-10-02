@@ -529,9 +529,14 @@ def cmd_doctor(args):
         if not r["has_client_files"] and r["name"] not in ("unnamed",):
             if not r["in_registry"]:
                 continue
+            has_key = (CLIENTS / f"{r['name']}.key").exists()
             warns.append(_issue(
                 "no-client-files", f"{r['name']}：clients/ 下无 .conf，无法重新下发",
-                fix="resign", target=r["name"], hint="点「重签配置」用已存私钥重新生成（缺私钥则需重新添加该客户端）"))
+                # 有私钥才能重签；没有就别给一个点了必然失败的按钮
+                fix="resign" if has_key else "", target=r["name"],
+                hint="点「重签配置」，用已存私钥重新生成配置文件。" if has_key else
+                     "这个客户端没有对应私钥文件（多为早期手工配置遗留），无法重签。"
+                     "还在用就重新添加一个客户端导入；不用了就在「客户端」页删除（先自动备份）。"))
     ips: dict[str, list[str]] = {}
     for r in v["rows"]:
         if r["ip"]:
