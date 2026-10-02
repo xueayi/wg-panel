@@ -1,0 +1,66 @@
+"""wg-panel 后端入口。
+
+职责边界：这里只做「校验 + 编排 + 审计」，WireGuard 语义全在 agent/wgagent.py。
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import secrets
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
+from .api import auth, peers, server, system
+from .config import settings
+from .drivers.base import ExecutorError
+from .security import hash_password
+from .services.store import Store
+
+log = logging.getLogger("wgpanel")
+APP_ROOT = Path(__file__).resolve().parents[2]
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="wg-panel", version="0.1.0", docs_url="/api/docs")
+
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    app.state.store = Store(settings.data_dir / "panel.db")
+    app.state.secret = settings.secret_key or secrets.token_hex(32)
+
+    # 首次启动：把 env 里注入的口令变成哈希存进 SQLite，之后 env 不再需要
+    if settings.admin_password and not app.state.store.get_admin():
+        app.state.store.set_admin("admin", hash_password(settings.admin_password))
+        log.info("已用 WGP_ADMIN_PASSWORD 初始化管理员口令")
+
+    app.include_router(auth.router)
+    app.include_router(peers.router)
+    app.include_router(server.router)
+    app.include_router(system.router)
+
+    @app.on_event("startup")
+    def _startup() -> None:
+        problems = settings.validate()
+        for p in problems:
+            log.warning("配置自检：%s", p)
+        if settings.driver == "ssh":
+            try:
+                from .drivers.ssh import SshExecutor
+                SshExecutor(settings).deploy()
+                log.info("wgagent.py 已下发到 %s", settings.ssh_host or "（未配置）")
+            except ExecutorError as exc:
+                log.warning("启动期下发 agent 失败：%s", exc)
+
+    # 容器里目录布局不同，静态资源目录可用 WGP_STATIC_DIR 覆盖
+    dist = Path(os.environ.get("WGP_STATIC_DIR") or (APP_ROOT / "frontend" / "dist"))
+    if dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="frontend")
+    else:
+        log.warning("未找到前端构建产物：%s（仅 API 可用）", dist)
+
+    return app
+
+
+app = create_app()

@@ -1,0 +1,38 @@
+# 运行时数据（面板 SQLite、导出的配置）
+/data/
+*.db
+*.sqlite3
+
+# 真实环境配置：仓库里只留 .example
+.env
+docker-compose.yml
+config.local.*
+
+# 私钥与客户端配置（永不入库）
+*.key
+*.pub
+!docs/**/*.pub
+clients/
+secrets/
+*.pem
+id_ed25519*
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# 编辑器 / 系统
+.DS_Store
+*.swp
+.idea/
+.vscode/

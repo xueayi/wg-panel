@@ -1,0 +1,152 @@
+import { useEffect, useState } from 'react'
+import { api, humanBytes, Peer, ServerInfo, Status } from '../api'
+import { Badge, Button, Card, CardHeader, Dot } from '../components/ui'
+
+export default function Dashboard({
+  onToast,
+  onGoPeers,
+}: {
+  onToast: (m: string, tone?: 'ok' | 'err') => void
+  onGoPeers: () => void
+}) {
+  const [status, setStatus] = useState<Status | null>(null)
+  const [server, setServer] = useState<ServerInfo | null>(null)
+  const [rows, setRows] = useState<Peer[]>([])
+  const [problems, setProblems] = useState<string[]>([])
+  const [warnings, setWarnings] = useState<string[]>([])
+
+  useEffect(() => {
+    Promise.all([api.status(), api.server(), api.peers(), api.doctor()])
+      .then(([s, srv, p, d]) => {
+        setStatus(s)
+        setServer(srv)
+        setRows(p.rows)
+        setProblems(d.problems || [])
+        setWarnings(d.warnings || [])
+      })
+      .catch((e) => onToast((e as Error).message, 'err'))
+  }, [])
+
+  const healthy = problems.length === 0
+
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Tile
+          label="中转节点"
+          value={status?.connected ? '已连接' : '未连接'}
+          tone={status?.connected ? 'ok' : 'bad'}
+          sub={status?.driver?.target || '—'}
+        />
+        <Tile
+          label="在线 / 总数"
+          value={`${server?.stats.online ?? 0} / ${server?.stats.total ?? 0}`}
+          sub={`${server?.stats.disabled ?? 0} 个已停用`}
+        />
+        <Tile
+          label="累计流量"
+          value={humanBytes((server?.stats.rx ?? 0) + (server?.stats.tx ?? 0))}
+          sub={`↓ ${humanBytes(server?.stats.rx ?? 0)} · ↑ ${humanBytes(server?.stats.tx ?? 0)}`}
+        />
+        <Tile
+          label="对外 Endpoint"
+          mono
+          value={server?.advertised_endpoint || '—'}
+          sub={`端口 ${server?.interface.listen_port || '—'}`}
+        />
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader
+            title="最近活跃"
+            desc="按最近握手排序，前几条就是正在用的设备。"
+            action={
+              <Button onClick={onGoPeers}>
+                管理客户端
+              </Button>
+            }
+          />
+          <ul className="divide-y divide-slate-50">
+            {rows
+              .slice()
+              .sort((a, b) => (a.state === '在线' ? -1 : 1))
+              .slice(0, 6)
+              .map((p) => (
+                <li key={p.name} className="flex items-center justify-between px-5 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <Dot tone={p.disabled ? 'amber' : p.state === '在线' ? 'green' : 'slate'} />
+                    <div>
+                      <div className="text-[13px] font-medium text-slate-800">{p.name}</div>
+                      <div className="font-mono text-[12px] text-slate-400">{p.ip}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 text-[12px] text-slate-400">
+                    <span>{p.disabled ? '已停用' : p.handshake_human}</span>
+                    <span className="font-mono">{humanBytes(p.rx + p.tx)}</span>
+                  </div>
+                </li>
+              ))}
+            {rows.length === 0 && <li className="px-5 py-8 text-center text-[13px] text-slate-400">还没有客户端</li>}
+          </ul>
+        </Card>
+
+        <Card>
+          <CardHeader title="体检" desc="配置与运行时的一致性检查" />
+          <div className="space-y-2 px-5 py-4">
+            {healthy && warnings.length === 0 && (
+              <div className="rounded-lg bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700">一切正常</div>
+            )}
+            {problems.map((p) => (
+              <div key={p} className="rounded-lg bg-red-50 px-3 py-2 text-[13px] leading-relaxed text-red-700">
+                {p}
+              </div>
+            ))}
+            {warnings.map((w) => (
+              <div key={w} className="rounded-lg bg-amber-50 px-3 py-2 text-[13px] leading-relaxed text-amber-700">
+                {w}
+              </div>
+            ))}
+            {(status?.problems || []).length > 0 && (
+              <div className="space-y-2 pt-2">
+                <div className="text-[12px] text-slate-400">面板配置自检</div>
+                {status?.problems.map((p) => (
+                  <div key={p} className="rounded-lg bg-slate-100 px-3 py-2 text-[13px] text-slate-600">
+                    {p}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function Tile({
+  label,
+  value,
+  sub,
+  mono,
+  tone,
+}: {
+  label: string
+  value: string
+  sub?: string
+  mono?: boolean
+  tone?: 'ok' | 'bad'
+}) {
+  return (
+    <div className="rounded-xl border border-slate-200/80 bg-white px-4 py-3.5 shadow-card">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] text-slate-400">{label}</span>
+        {tone && (
+          <Badge tone={tone === 'ok' ? 'green' : 'red'}>{tone === 'ok' ? '正常' : '异常'}</Badge>
+        )}
+      </div>
+      <div className={`mt-1 text-[17px] text-slate-900 ${mono ? 'font-mono text-[15px]' : ''}`}>{value}</div>
+      {sub && <div className="mt-0.5 truncate text-[12px] text-slate-400">{sub}</div>}
+    </div>
+  )
+}

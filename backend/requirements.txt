@@ -1,0 +1,4 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+paramiko==3.5.1
+segno==1.6.1
