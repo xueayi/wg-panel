@@ -1,6 +1,7 @@
 # wg-panel 从零开始：把你的 WireGuard 管起来
 
-> 这篇教程沿用一篇经典中文 WireGuard 长文（*《如何优雅地异地组网？超详细的 WireGuard 安装与使用说明》*）
+> 这篇教程沿用作者那篇
+> [《如何优雅地异地组网？超详细的 WireGuard 安装与使用说明》](https://blog.xueayi.site/article/wireguard)
 > 的思路：**中转节点部署 → 客户端接入 → 多地局域网互联**。
 > 区别在于：那篇文章里靠 SSH 敲命令和 Shell 脚本完成的每一步，这里都变成面板上的一个按钮。
 > 概念细节（`AllowedIPs` 的双侧语义、站点互联）建议对照原文一起看。
