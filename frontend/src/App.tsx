@@ -33,12 +33,12 @@ import System from './views/System'
 
 type Tab = 'overview' | 'peers' | 'server' | 'connection' | 'system'
 
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'overview', label: '概览' },
-  { key: 'peers', label: '客户端' },
-  { key: 'server', label: '中转节点 & IP' },
-  { key: 'connection', label: '连接设置' },
-  { key: 'system', label: '备份 & 审计' },
+const TABS: { key: Tab; label: string; short: string }[] = [
+  { key: 'overview', label: '概览', short: '概览' },
+  { key: 'peers', label: '客户端', short: '客户端' },
+  { key: 'server', label: '中转节点 & IP', short: '节点' },
+  { key: 'connection', label: '连接设置', short: '连接' },
+  { key: 'system', label: '备份 & 审计', short: '系统' },
 ]
 
 /** 线性图标，跟随文字颜色 */
@@ -148,7 +148,7 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-5">
         <div className="flex items-center gap-3">
           <img src="/logo.png" alt="wg-panel" className="h-10 w-10 rounded-xl object-cover shadow-sm ring-1 ring-slate-200" />
           <span className="text-[16px] font-medium text-slate-900">wg-panel</span>
@@ -163,7 +163,7 @@ export default function App() {
             href="https://github.com/xueayi/wg-panel"
             target="_blank"
             rel="noreferrer noopener"
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-[13px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+            className="hidden items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-[13px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 sm:inline-flex"
           >
             <svg
               width="15"
@@ -242,7 +242,7 @@ export default function App() {
           ))}
         </nav>
 
-        <main className="min-w-0 flex-1 overflow-y-auto px-5 py-5">
+        <main className="min-w-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5 sm:py-5">
           <div className="mx-auto max-w-6xl">
             <ErrorBoundary>
               {tab === 'overview' && <Dashboard onToast={say} onGoPeers={() => setTab('peers')} nonce={refreshNonce} />}
@@ -261,10 +261,10 @@ export default function App() {
             key={t.key}
             onClick={() => setTab(t.key)}
             className={`flex-1 py-2.5 text-[12px] ${
-              tab === t.key ? 'text-indigo-700' : 'text-slate-500'
+              tab === t.key ? 'font-medium text-indigo-700' : 'text-slate-500'
             }`}
           >
-            {t.label}
+            {t.short}
           </button>
         ))}
       </nav>

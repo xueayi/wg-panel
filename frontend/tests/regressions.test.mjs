@@ -46,13 +46,16 @@ test('完整配置下载显式请求明文并正确编码名称', () => {
   const html = renderToStaticMarkup(React.createElement(peers.ConfigModal, { peer: { ...peer, exportable: true }, onClose() {}, onSaved() {}, onToast() {} }))
   assert.match(html, /href="\/api\/peers\/phone\/config\?reveal=true"/)
 })
-test('流量柱具有明确父高度，断联显示缺口而非零流量', () => {
+test('流量折线图带坐标刻度，缺口断线并铺斜纹', () => {
   assert.equal(typeof dashboard.TrafficChart, 'function')
-  const html = renderToStaticMarkup(React.createElement(dashboard.TrafficChart, { series: { points: [[1, 1024, 2048], [2, null, null], [3, 0, 0]] } }))
-  assert.match(html, /h-full/)
+  const html = renderToStaticMarkup(React.createElement(dashboard.TrafficChart, { series: { window: 3600, step: 60, points: [[1, 1024, 2048], [2, null, null], [3, 0, 0]] } }))
+  assert.match(html, /<path[^>]*d="M[^"]+"/)          // 上下行折线
+  assert.match(html, /d="[^"]+M[0-9.]+/)              // 缺口处断线（一条 path 内重新起笔）
+  assert.match(html, /url\(#chart-gap\)/)             // 缺口铺斜纹而非拉成 0
+  assert.match(html, /KiB\/s/)                        // Y 轴速率刻度
+  assert.match(html, /text-anchor="end"/)              // 刻度文字右对齐贴轴
+  assert.match(html, /aria-label="[^"]*折线图[^"]*"/)
   assert.match(html, /数据缺口/)
-  assert.match(html, /height:50%/)
-  assert.match(html, /height:0%/)
 })
 
 test('管理模式作为启动配置只读展示', () => {
