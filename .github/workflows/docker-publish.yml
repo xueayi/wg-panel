@@ -4,12 +4,12 @@
 #   DOCKERHUB_USERNAME  Docker Hub 用户名
 #   DOCKERHUB_TOKEN     Docker Hub Access Token（Account Settings → Security）
 #
-# 触发：push 到 main（打 latest 标签）、推送 v* tag（打版本标签）、手动 workflow_dispatch。
+# 触发：推送 v* tag（打版本标签 + latest）、手动 workflow_dispatch。
+# 普通 push 到 main 不再触发构建。
 name: docker-publish
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -37,7 +37,7 @@ jobs:
         with:
           images: xueayis/wg-panel
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}}
             type=sha,prefix=sha-
 
