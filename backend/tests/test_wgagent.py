@@ -242,3 +242,42 @@ def test_backup_time_is_east_eight(wg):
 def test_resign_reports_failure_without_private_key(wg):
     with pytest.raises(AssertionError):
         wg["run"]("resign", "ghost")
+
+
+def test_update_can_rename_peer_and_preserve_client_history_files(wg):
+    wg["run"]("add", "phone", "--tunnel", "lan")
+    out = wg["run"]("update", "phone", "--new-name", "phone-renamed",
+                    "--peer-endpoint", "198.51.100.9:5000", "--peer-keepalive", "25",
+                    "--client-keepalive", "15")
+    assert out["name"] == "phone-renamed"
+    reg = wg["registry"]()
+    assert "phone" not in reg["clients"] and "phone-renamed" in reg["clients"]
+    assert wg["clients_dir"].joinpath("phone-renamed.key").exists()
+    assert "PersistentKeepalive = 15" in wg["client_conf"]("phone-renamed")
+    assert "Endpoint = 198.51.100.9:5000" in wg["conf_text"]()
+
+
+def test_write_creates_shared_agent_lock(wg):
+    wg["run"]("add", "phone", "--tunnel", "lan")
+    assert wg["base"].joinpath(".wgpanel.lock").exists()
+
+
+def test_metrics_is_read_only_and_returns_counter_shape(wg):
+    out = wg["run"]("metrics")
+    assert out["interface"] == "wg0"
+    assert isinstance(out["peers"], list)
+
+
+def test_sync_failure_restores_config_and_registry(wg):
+    wg["run"]("add", "phone", "--tunnel", "lan")
+    before_conf = wg["conf_text"]()
+    before_registry = wg["registry"]()
+    failing = wg["fake_wg"].read_text(encoding="utf-8").replace(
+        'elif a[0] == "syncconf":',
+        'elif a[0] == "syncconf":\n    sys.exit(1)',
+    )
+    wg["fake_wg"].write_text(failing, encoding="utf-8")
+    wg["fake_wg"].chmod(0o755)
+    wg["run"]("update", "phone", "--note", "changed", expect_ok=False)
+    assert wg["conf_text"]() == before_conf
+    assert wg["registry"]() == before_registry

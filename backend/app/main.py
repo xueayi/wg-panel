@@ -13,12 +13,15 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .api import auth, peers, server, system
+from .api import auth, peers, server, system, traffic
 from .api import settings as settings_api
 from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USER, settings
 from .drivers.base import ExecutorError
 from .security import hash_password
 from .services.store import Store
+from .services.traffic import TrafficSampler
+from .api.deps import get_sampling_executor, get_state_executor
+from .services.state import StateCache
 
 log = logging.getLogger("wgpanel")
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -48,7 +51,7 @@ def create_app() -> FastAPI:
     if overrides:
         parsed: dict = {}
         for k, v in overrides.items():
-            if k in ("ssh_port", "ssh_timeout"):
+            if k in ("ssh_port", "ssh_timeout", "local_timeout"):
                 try:
                     parsed[k] = int(v)
                 except ValueError:
@@ -60,17 +63,26 @@ def create_app() -> FastAPI:
         settings.apply(parsed)
         log.info("已载入面板里的连接设置：%s", ", ".join(f"{k}={v}" for k, v in parsed.items()))
 
+    app.state.traffic_sampler = TrafficSampler(
+        app.state.store, get_sampling_executor,
+        int(os.environ.get("WGP_TRAFFIC_INTERVAL", "1" if settings.driver == "local" else "5") or 0),
+    )
+    app.state.state_cache = StateCache(get_state_executor)
+
     app.include_router(auth.router)
     app.include_router(peers.router)
     app.include_router(server.router)
     app.include_router(settings_api.router)
     app.include_router(system.router)
+    app.include_router(traffic.router)
 
     @app.on_event("startup")
     def _startup() -> None:
         problems = settings.validate()
         for p in problems:
             log.warning("配置自检：%s", p)
+        app.state.traffic_sampler.start()
+        app.state.state_cache.start()
         if settings.driver == "ssh":
             try:
                 from .drivers.ssh import SshExecutor
@@ -78,6 +90,11 @@ def create_app() -> FastAPI:
                 log.info("wgagent.py 已下发到 %s", settings.ssh_host or "（未配置）")
             except ExecutorError as exc:
                 log.warning("启动期下发 agent 失败：%s", exc)
+
+    @app.on_event("shutdown")
+    def _shutdown() -> None:
+        app.state.traffic_sampler.stop()
+        app.state.state_cache.stop()
 
     # 容器里目录布局不同，静态资源目录可用 WGP_STATIC_DIR 覆盖
     dist = Path(os.environ.get("WGP_STATIC_DIR") or (APP_ROOT / "frontend" / "dist"))

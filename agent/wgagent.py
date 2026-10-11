@@ -45,7 +45,11 @@ wgagent.py — wg-panel 的服务端内核（在 WireGuard 中转节点上以 ro
 from __future__ import annotations
 
 import argparse
+import io
+import ipaddress
+import socket
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -53,6 +57,8 @@ import subprocess
 import sys
 import time
 import tempfile
+import contextlib
+import fcntl
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -73,9 +79,14 @@ BASE = Path(os.environ.get("WG_BASE", "/root/wireguard"))
 CLIENTS = BASE / "clients"
 BACKUP_DIR = BASE / "backup"
 REGISTRY = BASE / "registry.json"
+LOCK = BASE / ".wgpanel.lock"
+JOURNAL = BASE / "transaction.json"
+_LOCK_HELD = False
+_CONFIG_APPLIED = False
 
 # 二进制路径可注入：单测环境（无 wireguard-tools / 非 root）用 fake 脚本顶替
 WG_BIN = os.environ.get("WG_BIN", "wg")
+IP_BIN = os.environ.get("WG_IP_BIN", "ip")
 WG_QUICK_BIN = os.environ.get("WG_QUICK_BIN", "wg-quick")
 SKIP_ROOT = os.environ.get("WG_SKIP_ROOT", "") == "1"
 
@@ -239,12 +250,166 @@ def load_registry(required: bool = False) -> dict:
         return {}
 
 
+def atomic_write(path: Path, data: bytes):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".wgpanel-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
 def save_registry(reg: dict):
-    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    tmp = REGISTRY.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(reg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(REGISTRY)
+    atomic_write(REGISTRY, (json.dumps(reg, ensure_ascii=False, indent=2) + "\n").encode())
+
+
+@contextlib.contextmanager
+def agent_lock():
+    global _LOCK_HELD
+    if _LOCK_HELD:
+        yield
+        return
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(LOCK.parent, 0o700)
+    with LOCK.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _LOCK_HELD = True
+        try:
+            yield
+        finally:
+            _LOCK_HELD = False
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def semantic_conf(text: str):
+    # Preserve repeated hooks and secrets when comparing authority. Comments/order
+    # are harmless, unlike a PSK, hook, or route directive change.
+    iface, peers = parse_conf_text(text)
+    return sorted(iface), sorted(
+        [sorted((k, v) for k, v in p.items() if not k.startswith("__")) for p in peers])
+
+
+def parse_conf_text(text: str):
+    iface, peers, cur = [], [], None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line == "[Interface]":
+            cur = iface
+        elif line == "[Peer]":
+            cur = {}; peers.append(cur)
+        elif "=" in line and not line.startswith("#") and cur is not None:
+            key, value = (v.strip() for v in line.split("=", 1))
+            if isinstance(cur, list): cur.append((key, value))
+            else: cur[key] = value
+    return iface, peers
+
+
+def disk_drift(reg: dict):
+    if not reg or not CONF.exists():
+        return False
+    current = CONF.read_bytes()
+    digest = reg.get("managed_conf_sha256")
+    if digest:
+        return hashlib.sha256(current).hexdigest() != digest
+    expected = render_conf(reg["interface"], reg.get("clients", {}), _priv_key())
+    return semantic_conf(current.decode()) != semantic_conf(expected)
+
+
+def restore_snapshot(folder: Path):
+    meta = json.loads((folder / "manifest.json").read_text())
+    for path, backup in ((CONF, "server.conf"), (REGISTRY, "registry.json")):
+        if meta[backup]: atomic_write(path, (folder / backup).read_bytes())
+        else: path.unlink(missing_ok=True)
+    if CLIENTS.exists(): shutil.rmtree(CLIENTS)
+    if meta["clients"]:
+        shutil.copytree(folder / "clients", CLIENTS)
+        os.chmod(CLIENTS, 0o700)
+
+
+def run_transaction(args):
+    global _CONFIG_APPLIED
+    _CONFIG_APPLIED = False
+    with agent_lock():
+        if JOURNAL.exists():
+            journal = {}
+            try:
+                journal = json.loads(JOURNAL.read_text())
+            except json.JSONDecodeError:
+                pass
+            interrupted = Path(journal.get("backup", ""))
+            rollback_system()
+            if (interrupted / "manifest.json").exists():
+                restore_snapshot(interrupted)
+                try:
+                    apply_syncconf()
+                except BaseException:
+                    die("上次事务恢复文件成功，但旧配置同步失败；请检查接口后重试", 2)
+                JOURNAL.unlink()
+            else:
+                eprint("⚠ 上次事务的备份快照缺失，系统级逆操作已回放，"
+                       "文件无法自动恢复；请手工核对 wg0.conf 与 registry.json")
+                JOURNAL.unlink(missing_ok=True)
+        reg = load_registry()
+        if args.cmd not in {"adopt", "restore", "backup", "fix-perms"} and disk_drift(reg):
+            die("磁盘配置发生外部漂移；已阻止覆盖，请先预览并重新纳管", 4)
+        if args.cmd == "apply":
+            request = json.loads(args.request)
+            if args.revision != plan_revision(request):
+                die("配置已变化，请重新预览", 4)
+            validate_operation(request)
+        folder = BACKUP_DIR / ("transaction-" + str(time.time_ns()))
+        folder.mkdir(parents=True, mode=0o700)
+        os.chmod(BACKUP_DIR, 0o700)
+        meta = {"server.conf": CONF.exists(), "registry.json": REGISTRY.exists(), "clients": CLIENTS.exists()}
+        for source, name in ((CONF, "server.conf"), (REGISTRY, "registry.json")):
+            if source.exists(): shutil.copy2(source, folder / name)
+        if CLIENTS.exists(): shutil.copytree(CLIENTS, folder / "clients")
+        atomic_write(folder / "manifest.json", json.dumps(meta).encode())
+        atomic_write(JOURNAL, json.dumps({"backup": str(folder)}).encode())
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(output):
+                result = args.func(args) or 0
+            if result: raise RuntimeError("事务执行失败")
+            if _CONFIG_APPLIED and REGISTRY.exists() and CONF.exists():
+                new = load_registry()
+                new["managed_conf_sha256"] = hashlib.sha256(CONF.read_bytes()).hexdigest()
+                save_registry(new)
+            JOURNAL.unlink()
+        except BaseException:
+            changed_conf = (CONF.read_bytes() if CONF.exists() else None) != ((folder / "server.conf").read_bytes() if meta["server.conf"] else None)
+            recovery_done = True
+            try:
+                rollback_system()
+            except BaseException:
+                recovery_done = False
+                eprint("恢复结果：系统地址/路由恢复失败；未完成恢复状态已保留，下条写命令会继续尝试")
+            restore_snapshot(folder)
+            if changed_conf:
+                try:
+                    apply_syncconf()
+                except BaseException:
+                    recovery_done = False
+                    eprint("恢复结果：文件已恢复，旧配置重新同步失败；未完成恢复状态已保留，下条写命令会继续尝试")
+                else:
+                    eprint("恢复结果：文件及旧运行配置已恢复")
+            else:
+                eprint("恢复结果：文件已恢复，运行配置未改变")
+            # 恢复不完整时保留 JOURNAL（含剩余 undo 队列），让下条写命令接着恢复；
+            # 只有确认恢复完整才删除，避免把没做完的逆操作悄悄丢掉。
+            if recovery_done:
+                JOURNAL.unlink(missing_ok=True)
+            raise
+        # All snapshots contain the registry, server config, and client files.
+        for old in sorted(BACKUP_DIR.glob("transaction-*"), reverse=True)[BACKUP_KEEP:]:
+            shutil.rmtree(old)
+        print(output.getvalue(), end="")
+        return result
 
 
 def load_client_pubkey_map() -> dict:
@@ -377,6 +542,12 @@ def view() -> dict:
             "allowed_ips": allowed,
             "site_routes": [a for a in allowed if a != f"{ip}/32"],
             "endpoint": l.get("endpoint") or rc.get("endpoint") or conf.get("endpoint", ""),
+            "configured_endpoint": rc.get("endpoint", ""),
+            "keepalive": int(rc.get("keepalive") or 0),
+            "client_keepalive": int(rc.get("client_keepalive", 25)),
+            "client_allowed_ips": client_allowed_for(reg, rc) if rc else [],
+            "exportable": (CLIENTS / f"{name}.key").exists() and (CLIENTS / f"{name}.conf").exists(),
+            "export_reason": "" if (CLIENTS / f"{name}.key").exists() else "缺少客户端私钥，无法导出配置",
             "state": state,
             "handshake": hs,
             "handshake_human": human_age(hs),
@@ -444,6 +615,29 @@ def cmd_status(args):
     return 0
 
 
+def cmd_metrics(args):
+    """只读取内核计数，供面板采样；不解析登记表、不写任何文件。"""
+    result = sh([WG_BIN, "show", IFACE, "dump"], check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        die("WireGuard 接口不可用，无法采样", 2)
+    server_pub, live = live_dump()
+    payload = {
+        "interface": IFACE,
+        "server_public_key": server_pub,
+        "peers": [
+            {
+                "public_key": key,
+                "handshake": value.get("handshake", 0),
+                "rx": value.get("rx", 0),
+                "tx": value.get("tx", 0),
+            }
+            for key, value in sorted(live.items())
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
 def cmd_render(args):
     """把登记表渲染成配置文件文本；--check 只比对不写。"""
     reg = load_registry(required=True)
@@ -465,6 +659,132 @@ def cmd_render(args):
         return 0 if same else 1
     print(mask_secrets(text))
     return 0
+
+
+def runtime_differences(reg: dict):
+    _, live = live_dump()
+    expected = {c['pubkey']: c for c in reg.get('clients', {}).values() if not c.get('disabled')}
+    changed = []
+    for pk in sorted(set(live) | set(expected)):
+        actual, wanted = live.get(pk), expected.get(pk)
+        if actual is None or wanted is None:
+            changed.append({'public_key': pk, 'fields': ['peer']})
+            continue
+        fields = []
+        if sorted(actual['allowed_ips']) != sorted(wanted['allowed_ips']): fields.append('AllowedIPs')
+        if int(actual.get('keepalive') or 0) != int(wanted.get('keepalive') or 0): fields.append('PersistentKeepalive')
+        if wanted.get('endpoint') and not endpoint_matches(wanted['endpoint'], actual.get('endpoint', '')): fields.append('Endpoint')
+        if fields: changed.append({'public_key': pk, 'fields': fields})
+    return changed
+
+
+def endpoint_matches(wanted: str, actual: str):
+    if wanted == actual: return True
+    try:
+        host, port = wanted.rsplit(':', 1)
+        host = host.strip('[]')
+        candidates = {f'{ip[4][0]}:{port}' if ':' not in ip[4][0] else f'[{ip[4][0]}]:{port}'
+                      for ip in socket.getaddrinfo(host, int(port), type=socket.SOCK_DGRAM)}
+        return actual in candidates
+    except (ValueError, OSError):
+        return False
+
+
+def verify_runtime():
+    check = sh([WG_BIN, 'show', IFACE, 'dump'], check=False)
+    if check.returncode or not check.stdout.strip(): die('应用校验失败：接口不可用', 2)
+    differences = runtime_differences(load_registry(required=True))
+    if differences:
+        die('应用校验失败：' + json.dumps(differences, ensure_ascii=False), 2)
+
+
+def validate_operation(request: dict):
+    operation, name, params = request.get('operation'), request.get('name', ''), request.get('params', {})
+    if operation not in {'add_peer', 'update_peer', 'remove_peer'} or not NAME_RE.fullmatch(name) or not isinstance(params, dict):
+        die('无效的变更操作或客户端名称', 1)
+    reg = load_registry(required=True)
+    clients = reg.get('clients', {})
+    if operation == 'add_peer' and name in clients: die('客户端已存在', 1)
+    if operation != 'add_peer' and name not in clients: die('客户端不存在', 1)
+    if operation == 'remove_peer':
+        if params: die('删除操作不接受额外参数', 1)
+        return
+    flags = {'tunnel', 'allowed_ips', 'ip', 'site_routes', 'note', 'endpoint', 'keepalive', 'client_keepalive'}
+    flags |= {'net', 'dns', 'mtu', 'advertised_endpoint'} if operation == 'add_peer' else {'new_name', 'enabled'}
+    if set(params) - flags: die('不支持的参数：' + ', '.join(sorted(set(params) - flags)), 1)
+    new_name = params.get('new_name')
+    if new_name and (not NAME_RE.fullmatch(new_name) or new_name != name and new_name in clients): die('客户端新名称无效或已存在', 1)
+    ip = params.get('ip')
+    if ip:
+        try: ipaddress.ip_address(ip)
+        except ValueError: die('无效的客户端 IP', 1)
+        if any(n != name and c.get('ip') == ip for n, c in clients.items()): die('客户端 IP 已占用', 1)
+    tunnel = params.get('tunnel', 'lan' if operation == 'add_peer' else clients[name].get('tunnel') or 'lan')
+    if tunnel not in {'lan', 'full', 'custom'}: die('无效隧道模式', 1)
+    if tunnel == 'custom' and not params.get('allowed_ips', clients.get(name, {}).get('client_allowed_ips')): die('custom 需要 allowed_ips', 1)
+    for field in ('allowed_ips', 'site_routes'):
+        if params.get(field):
+            try:
+                for cidr in parse_allowed_ips(params[field]): ipaddress.ip_network(cidr, strict=False)
+            except (ValueError, TypeError): die('无效 CIDR：' + field, 1)
+    for field in ('keepalive', 'client_keepalive'):
+        if field in params and (not isinstance(params[field], int) or not 0 <= params[field] <= 65535): die('Keepalive 必须为 0~65535 秒', 1)
+    for field in ('endpoint', 'advertised_endpoint'):
+        value = params.get(field)
+        if value and (not isinstance(value, str) or not re.fullmatch(r'(?:[A-Za-z0-9_.-]+|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}', value) or not 1 <= int(value.rsplit(':',1)[1]) <= 65535): die('无效 Endpoint', 1)
+    if 'enabled' in params and not isinstance(params['enabled'], bool): die('enabled 必须为布尔值', 1)
+
+
+def operation_args(request: dict):
+    operation = request['operation']; name = request['name']; params = request.get('params', {})
+    cmd = {'add_peer': 'add', 'update_peer': 'update', 'remove_peer': 'remove'}[operation]
+    argv = [cmd, name, '--json']
+    if cmd == 'remove': return build_parser().parse_args(argv + ['--yes'])
+    flags = {'tunnel': '--tunnel', 'allowed_ips': '--allowed-ips', 'ip': '--ip', 'site_routes': '--site-routes',
+             'note': '--note', 'endpoint': '--peer-endpoint', 'keepalive': '--peer-keepalive',
+             'client_keepalive': '--client-keepalive', 'net': '--net', 'dns': '--dns', 'mtu': '--mtu',
+             'advertised_endpoint': '--endpoint', 'new_name': '--new-name', 'enabled': '--enabled'}
+    for key, value in params.items():
+        argv += [flags[key], str(value).lower() if isinstance(value, bool) else str(value)]
+    return build_parser().parse_args(argv)
+
+
+def plan_revision(request=None):
+    _, live = live_dump()
+    runtime = {pk: {'allowed_ips': sorted(v['allowed_ips']), 'keepalive': v['keepalive']}
+               for pk, v in live.items()}
+    sources = {'host': socket.gethostname(), 'iface': IFACE, 'config_path': str(CONF), 'request': request,
+               'runtime': runtime, 'files': {}}
+    for file in [CONF, REGISTRY] + sorted(CLIENTS.glob('*')):
+        if file.is_file(): sources['files'][str(file)] = hashlib.sha256(file.read_bytes()).hexdigest()
+    return hashlib.sha256(json.dumps(sources, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def cmd_plan(args):
+    reg = load_registry()
+    request = json.loads(args.request) if args.request else None
+    if request: validate_operation(request)
+    drift = disk_drift(reg)
+    runtime = runtime_differences(reg) if reg else []
+    payload = {'same': not drift, 'revision': plan_revision(request),
+               'changed': ['wireguard.conf'] if drift else [], 'runtime_changes': runtime,
+               'warnings': ['磁盘配置发生外部漂移，禁止应用'] if drift else [], 'blocked': drift}
+    if request:
+        params = request.get('params', {})
+        risk = request['operation'] == 'remove_peer' or any(k in params for k in ('ip', 'site_routes', 'allowed_ips', 'enabled'))
+        payload.update(request)
+        payload.update({'mode': 'blocked' if drift else 'apply', 'affected_peers': [request['name']],
+                        'destructive': request['operation'] == 'remove_peer', 'disruptive': risk})
+        if risk: payload['warnings'].append('客户端地址、路由、停用或删除可能中断该客户端连接')
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+def cmd_apply(args):
+    request = json.loads(args.request)
+    if request['operation'] == 'remove_peer' and not args.confirm: die('删除操作需要确认', 3)
+    operation = operation_args(request)
+    return operation.func(operation)
 
 
 def _issue(code: str, message: str, *, fix: str = "", hint: str = "",
@@ -644,14 +964,27 @@ def cmd_restore(args):
     if not args.yes:
         die(f"即将用 {src.name} 覆盖 {CONF}。确认请加 --yes", 3)
     make_backup("pre-restore")
-    shutil.copy(src, CONF)
-    os.chmod(CONF, 0o600)
+    atomic_write(CONF, src.read_bytes())
     apply_syncconf()
+    # registry 是权威：旧 conf-only 备份可能与登记表不一致，恢复后要如实告知后果
+    registry_warning = ""
+    reg = load_registry()
+    if reg:
+        try:
+            expected = render_conf(reg["interface"], reg.get("clients", {}), _priv_key())
+            if semantic_conf(src.read_text(encoding="utf-8")) != semantic_conf(expected):
+                registry_warning = ("恢复的配置与登记表不一致：登记表仍是权威，"
+                                    "后续写命令会被漂移保护阻止；请重新预览并纳管，或确认后用 sync 按登记表重渲染")
+        except SystemExit:
+            registry_warning = "恢复的配置缺少私钥，无法与登记表比对；后续写命令会被漂移保护阻止"
     if args.json:
-        print(json.dumps({"restored": src.name, "pre_restore_backup": True},
+        print(json.dumps({"restored": src.name, "pre_restore_backup": True,
+                          "registry_warning": registry_warning},
                          ensure_ascii=False))
         return 0
     print(f"已恢复 ← {src}")
+    if registry_warning:
+        print(color(f"⚠ {registry_warning}", C_WARN))
     return 0
 
 
@@ -674,12 +1007,126 @@ def apply_syncconf():
         Path(tmp).unlink(missing_ok=True)
 
 
+def _addr_set_on_iface() -> set[str] | None:
+    """接口当前地址集合（`10.8.2.1/24` 形式）；查询失败返回 None（按未知处理）。"""
+    result = sh([IP_BIN, "-j", "addr", "show", "dev", IFACE], check=False)
+    if result.returncode:
+        return None
+    try:
+        entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    return {f"{a.get('local')}/{a.get('prefixlen')}"
+            for e in entries for a in (e.get("addr_info") or [])}
+
+
+def _route_exists(route: str, family: list[str]) -> bool | None:
+    result = sh([IP_BIN, *family, "-j", "route", "show", "exact", route], check=False)
+    if result.returncode:
+        return None
+    try:
+        return bool(json.loads(result.stdout or "[]"))
+    except json.JSONDecodeError:
+        return None
+
+
+def _undo_done(argv: list[str]) -> bool | None:
+    """判断一条逆操作是否已经生效（幂等重放的依据）。
+
+    返回 True=已完成可跳过；False=未完成需要执行；None=查询失败，保守地重试。
+    """
+    try:
+        i = next(k for k, t in enumerate(argv) if t in ("add", "del"))
+    except StopIteration:
+        return None
+    op, target = argv[i], argv[i + 1]
+    family = ["-6"] if "-6" in argv else []
+    if "address" in argv:
+        live = _addr_set_on_iface()
+        if live is None:
+            return None
+        return (target in live) if op == "add" else (target not in live)
+    exists = _route_exists(target, family)
+    if exists is None:
+        return None
+    return exists if op == "add" else not exists
+
+
+def rollback_system():
+    if not JOURNAL.exists(): return
+    undo = json.loads(JOURNAL.read_text()).get('undo', [])
+    failures = []
+    for argv in reversed(undo):
+        if _undo_done(argv) is True:
+            continue  # 上次恢复已执行成功，重放时跳过，避免重复执行卡死恢复
+        if sh(argv, check=False).returncode and _undo_done(argv) is not True:
+            failures.append(' '.join(argv[1:3]))
+    if failures: die('系统地址/路由恢复失败：' + ', '.join(failures), 2)
+
+
+def change_system(argv, inverse):
+    journal = json.loads(JOURNAL.read_text())
+    journal.setdefault('undo', []).append(inverse)
+    atomic_write(JOURNAL, json.dumps(journal).encode())
+    result = sh(argv, check=False)
+    if result.returncode:
+        journal['undo'].pop()
+        atomic_write(JOURNAL, json.dumps(journal).encode())
+        die('系统地址/路由应用失败：' + mask_secrets(result.stderr), 2)
+
+
+def sync_system_config(old: str, new: str):
+    old_pairs, _ = parse_conf_text(old)
+    new_pairs, _ = parse_conf_text(new)
+    for key in ('MTU', 'ListenPort', 'PostUp', 'PostDown', 'PreUp', 'PreDown', 'Table'):
+        if key in ('MTU', 'PostUp', 'PostDown', 'PreUp', 'PreDown', 'Table') and [v for k, v in old_pairs if k == key] != [v for k, v in new_pairs if k == key]:
+            die('此变更需要重启接口或执行钩子，已阻止：' + key, 1)
+    def addresses(pairs):
+        return {str(ipaddress.ip_interface(a)) for key, value in pairs if key == 'Address' for a in parse_allowed_ips(value)}
+    old_addrs, new_addrs = addresses(old_pairs), addresses(new_pairs)
+    for addr in sorted(new_addrs - old_addrs):
+        change_system([IP_BIN, 'address', 'add', addr, 'dev', IFACE], [IP_BIN, 'address', 'del', addr, 'dev', IFACE])
+    # Only routes explicitly installed by the panel are reclaimed.
+    reg = load_registry(required=True)
+    wanted = {route for c in reg.get('clients', {}).values() if not c.get('disabled') for route in site_routes_of(c)}
+    manifest = json.loads(JOURNAL.read_text())
+    backup = Path(manifest['backup'])
+    old_reg = json.loads((backup / 'registry.json').read_text()) if (backup / 'registry.json').exists() else {}
+    old_routes = {route for c in old_reg.get('clients', {}).values() if not c.get('disabled') for route in site_routes_of(c)}
+    owned = set(old_reg.get('owned_routes', []))
+    for route in sorted(wanted - old_routes):
+        family = ['-6'] if ':' in route else []
+        result = sh([IP_BIN, *family, '-j', 'route', 'show', 'exact', route], check=False)
+        if result.returncode: die('读取系统路由失败', 2)
+        existing = json.loads(result.stdout or '[]')
+        if existing:
+            if not all(r.get('dev') == IFACE for r in existing): die('已有系统路由与站点路由冲突：' + route, 1)
+            continue
+        argv = [IP_BIN, *family, 'route', 'add', route, 'dev', IFACE]
+        inverse = [IP_BIN, *family, 'route', 'del', route, 'dev', IFACE]
+        change_system(argv, inverse)
+        owned.add(route)
+    for route in sorted(owned - wanted):
+        family = ['-6'] if ':' in route else []
+        change_system([IP_BIN, *family, 'route', 'del', route, 'dev', IFACE], [IP_BIN, *family, 'route', 'add', route, 'dev', IFACE])
+        owned.remove(route)
+    for addr in sorted(old_addrs - new_addrs):
+        change_system([IP_BIN, 'address', 'del', addr, 'dev', IFACE], [IP_BIN, 'address', 'add', addr, 'dev', IFACE])
+    reg['owned_routes'] = sorted(owned)
+    save_registry(reg)
+
+
+
 def write_conf(text: str, tag: str = "auto"):
+    global _CONFIG_APPLIED
+    old_text = CONF.read_text() if CONF.exists() else ""
     make_backup(tag)
     prune_backups()
-    CONF.write_text(text, encoding="utf-8")
-    os.chmod(CONF, 0o600)
+    atomic_write(CONF, text.encode())
     apply_syncconf()
+    verify_runtime()
+    sync_system_config(old_text, text)
+    _CONFIG_APPLIED = True
 
 
 def _priv_key() -> str:
@@ -783,14 +1230,16 @@ def server_public_key() -> str:
     return p.stdout.strip()
 
 
-def client_conf_text(name, priv, ip, server_pub, endpoint, allowed, dns, mtu, prefix="24") -> str:
+def client_conf_text(name, priv, ip, server_pub, endpoint, allowed, dns, mtu, prefix="24", keepalive=25, preshared_key="") -> str:
     lines = ["[Interface]", f"PrivateKey = {priv}", f"Address = {ip}/{prefix}"]
     if mtu:
         lines.append(f"MTU = {mtu}")
     if dns:
         lines.append(f"DNS = {dns}")
     lines += ["", "[Peer]", f"PublicKey = {server_pub}", f"Endpoint = {endpoint}",
-              f"AllowedIPs = {', '.join(allowed)}", "PersistentKeepalive = 25"]
+              f"AllowedIPs = {', '.join(allowed)}", f"PersistentKeepalive = {keepalive}"]
+    if preshared_key:
+        lines.append(f"PresharedKey = {preshared_key}")
     return "\n".join(lines) + "\n"
 
 
@@ -830,15 +1279,15 @@ def cmd_add(args):
 
     CLIENTS.mkdir(parents=True, exist_ok=True)
     os.chmod(CLIENTS, 0o700)
-    (CLIENTS / f"{name}.key").write_text(priv + "\n", encoding="utf-8")
-    (CLIENTS / f"{name}.pub").write_text(pub + "\n", encoding="utf-8")
+    atomic_write(CLIENTS / f"{name}.key", (priv + "\n").encode())
+    atomic_write(CLIENTS / f"{name}.pub", (pub + "\n").encode())
     os.chmod(CLIENTS / f"{name}.key", 0o600)
     os.chmod(CLIENTS / f"{name}.pub", 0o600)
     prefix = iface.get("address", "10.8.1.1/24").split("/")[1] if "/" in iface.get("address", "") else "24"
     conf_text = client_conf_text(name, priv, ip, server_pub, endpoint, allowed,
                                  args.dns or reg.get("client_dns"), args.mtu or reg.get("client_mtu"),
-                                 prefix)
-    (CLIENTS / f"{name}.conf").write_text(conf_text, encoding="utf-8")
+                                 prefix, args.client_keepalive)
+    atomic_write(CLIENTS / f"{name}.conf", conf_text.encode())
     os.chmod(CLIENTS / f"{name}.conf", 0o600)
 
     site_routes = parse_allowed_ips(args.site_routes) if args.site_routes else []
@@ -847,7 +1296,9 @@ def cmd_add(args):
         "ip": ip,
         "allowed_ips": peer_allowed_ips(ip, site_routes),
         "client_allowed_ips": list(allowed),
-        "endpoint": "",
+        "endpoint": args.peer_endpoint or "",
+        "keepalive": args.peer_keepalive,
+        "client_keepalive": args.client_keepalive,
         "tunnel": tunnel,
         "created": datetime.now().strftime("%Y-%m-%d"),
         "note": args.note or "",
@@ -972,10 +1423,10 @@ def resign_client(reg: dict, name: str, endpoint: str | None = None) -> str | No
         return None
     text = client_conf_text(name, keyp.read_text(encoding="utf-8").strip(), c["ip"],
                             server_public_key(), ep, client_allowed_for(reg, c),
-                            reg.get("client_dns"), reg.get("client_mtu"), prefix)
+                            c.get("client_dns", reg.get("client_dns")), c.get("client_mtu", reg.get("client_mtu")), prefix,
+                            c.get("client_keepalive", 25), c.get("preshared_key", ""))
     p = CLIENTS / f"{name}.conf"
-    p.write_text(text, encoding="utf-8")
-    os.chmod(p, 0o600)
+    atomic_write(p, text.encode())
     return text
 
 
@@ -1061,7 +1512,21 @@ def cmd_update(args):
     clients = reg.get("clients", {})
     if args.name not in clients:
         die(f"登记表里没有 {args.name}", 1)
-    c = clients[args.name]
+    old_name = args.name
+    c = clients[old_name]
+
+    if args.new_name and args.new_name != old_name:
+        if not NAME_RE.match(args.new_name):
+            die("客户端名只能是字母/数字/._-，1~32 字符", 1)
+        if args.new_name in clients:
+            die(f"登记表里已经有 {args.new_name}", 1)
+        for ext in (".key", ".pub", ".conf"):
+            src = CLIENTS / f"{old_name}{ext}"
+            if src.exists():
+                src.rename(CLIENTS / f"{args.new_name}{ext}")
+        clients[args.new_name] = clients.pop(old_name)
+        args.name = args.new_name
+        c = clients[args.name]
 
     if args.tunnel:
         c["tunnel"] = args.tunnel
@@ -1078,7 +1543,15 @@ def cmd_update(args):
         c["allowed_ips"] = peer_allowed_ips(c["ip"], parse_allowed_ips(args.site_routes))
     if args.note is not None:
         c["note"] = args.note
+    if args.peer_endpoint is not None:
+        c["endpoint"] = args.peer_endpoint
+    if args.peer_keepalive is not None:
+        c["keepalive"] = args.peer_keepalive
+    if args.client_keepalive is not None:
+        c["client_keepalive"] = args.client_keepalive
 
+    if args.enabled is not None:
+        c["disabled"] = args.enabled == "false"
     resigned = resign_client(reg, args.name) is not None
     save_registry(reg)
     write_conf(render_conf(reg["interface"], clients, _priv_key()), f"update-{args.name}")
@@ -1086,7 +1559,9 @@ def cmd_update(args):
     payload = {"name": args.name, "ip": c["ip"], "tunnel": c.get("tunnel", ""),
                "client_allowed_ips": client_allowed_for(reg, c),
                "site_routes": site_routes_of(c),
-               "note": c.get("note", ""), "resigned": resigned}
+               "note": c.get("note", ""), "endpoint": c.get("endpoint", ""),
+               "keepalive": c.get("keepalive"),
+               "client_keepalive": c.get("client_keepalive", 25), "resigned": resigned}
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -1271,27 +1746,62 @@ def detect_lan_allowed(reg_clients: dict) -> list[str]:
     return parse_allowed_ips(best[0])
 
 
+def discover_client_configs():
+    """Read linuxserver peer configs by deriving each private key's public key.
+
+    No file is written during discovery or a dry-run preview.
+    """
+    found = {}
+    candidates = list(CLIENTS.glob('*.conf')) + list(WG_DIR.parent.glob('peer*/*.conf'))
+    for path in sorted(candidates):
+        try:
+            text = path.read_text()
+            pairs, peers = parse_conf_text(text)
+            private = dict(pairs).get('PrivateKey')
+            if not private: continue
+            result = sh([WG_BIN, 'pubkey'], input_=private + '\n', check=False)
+            public = result.stdout.strip()
+            if result.returncode or not public: continue
+            found[public] = {'name': path.stem, 'private': private, 'text': text,
+                             'iface': dict(pairs), 'peer': peers[0] if peers else {}}
+        except (OSError, ValueError):
+            continue
+    return found
+
+
 def cmd_adopt(args):
     if not args.yes and not args.dry_run:
         die("adopt 会重写 wg0.conf（先自动备份）。确认请加 --yes，只预览加 --dry-run", 3)
     iface_pairs, peers = parse_conf(CONF)
     im = iface_map(iface_pairs)
+    supported = {"Address", "ListenPort", "PrivateKey", "SaveConfig", "MTU", "PostUp", "PostDown"}
+    unknown = sorted({k for k, _ in iface_pairs if k not in supported})
+    duplicate_hooks = [k for k in {k for k, _ in iface_pairs} if sum(1 for x, _ in iface_pairs if x == k) > 1]
+    peer_unknown = sorted({k for peer in peers for k in peer if not k.startswith("__") and k not in {"PublicKey", "AllowedIPs", "Endpoint", "PresharedKey", "PersistentKeepalive"}})
+    if unknown or duplicate_hooks or peer_unknown:
+        die("无法无损纳管的字段：" + ", ".join(unknown + duplicate_hooks + peer_unknown), 1)
     pub2name = load_client_pubkey_map()
+    discovered = discover_client_configs()
     reg = load_registry()
+    imports = {}
+    warnings = []
     clients = reg.get("clients", {})
 
     for idx, p in enumerate(peers, 1):
         pk = p.get("PublicKey")
         if not pk:
             continue
-        name = pub2name.get(pk) or p.get("__comment") or f"peer-{idx}"
-        if name in clients and clients[name].get("pubkey") == pk:
-            continue
+        candidate = discovered.get(pk)
+        name = pub2name.get(pk) or p.get("__comment") or (candidate["name"] if candidate else None) or f"peer-{idx}"
+        if not NAME_RE.fullmatch(name): name = f"peer-{idx}"
+        if name in clients and clients[name].get("pubkey") != pk:
+            name = f"peer-{idx}"
         allowed = parse_allowed_ips(p.get("AllowedIPs", ""))
         ip = next((a.split("/")[0] for a in allowed if a.endswith("/32")), "")
         if not ip:
             ip = next((a.split("/")[0] for a in allowed), "")
         clients[name] = {
+            **clients.get(name, {}),
             "pubkey": pk,
             "ip": ip,
             "allowed_ips": allowed,
@@ -1304,6 +1814,15 @@ def cmd_adopt(args):
             clients[name]["preshared_key"] = p["PresharedKey"]
         if p.get("PersistentKeepalive"):
             clients[name]["keepalive"] = p["PersistentKeepalive"]
+        if candidate and candidate['peer'].get('PresharedKey', '') == p.get('PresharedKey', ''):
+            imports[name] = candidate
+            clients[name]['client_allowed_ips'] = parse_allowed_ips(candidate['peer'].get('AllowedIPs', ''))
+            clients[name]['tunnel'] = 'full' if '0.0.0.0/0' in clients[name]['client_allowed_ips'] else 'custom'
+            clients[name]['client_keepalive'] = int(candidate['peer'].get('PersistentKeepalive', 25))
+            clients[name]['client_dns'] = candidate['iface'].get('DNS', '')
+            clients[name]['client_mtu'] = candidate['iface'].get('MTU', '')
+        elif not (CLIENTS / f'{name}.key').exists():
+            warnings.append(f'{name} 缺少匹配私钥或客户端 PSK 不一致；禁用导出')
 
     lan = detect_lan_allowed(clients) or [iface_network(im["Address"])]
     reg = {
@@ -1324,6 +1843,11 @@ def cmd_adopt(args):
     text = render_conf(reg["interface"], clients, _priv_key())
 
     if args.dry_run:
+        if args.json:
+            print(json.dumps({'adopted': len(clients), 'revision': plan_revision(),
+                              'warnings': warnings, 'clients': [{'name': name, 'public_key': c['pubkey'],
+                                  'exportable': name in imports or (CLIENTS / f'{name}.key').exists()} for name, c in clients.items()]}, ensure_ascii=False))
+            return 0
         if args.emit:
             # 输出「将要写入」的配置（私钥已遮罩，仅用于比对/审查）
             sys.stdout.write(mask_secrets(text))
@@ -1345,6 +1869,13 @@ def cmd_adopt(args):
         print(f"局域网模式 AllowedIPs：{', '.join(lan)}")
         return 0
 
+    if args.revision and args.revision != plan_revision():
+        die("配置已变化，请重新预览", 4)
+    for name, candidate in imports.items():
+        CLIENTS.mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_write(CLIENTS / f'{name}.key', (candidate['private'] + '\n').encode())
+        atomic_write(CLIENTS / f'{name}.pub', (clients[name]['pubkey'] + '\n').encode())
+        atomic_write(CLIENTS / f'{name}.conf', candidate['text'].encode())
     save_registry(reg)
     write_conf(text, "adopt")
     if args.json:
@@ -1398,6 +1929,10 @@ def build_parser():
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_status)
 
+    p = sub.add_parser("metrics", help="读取接口和 peer 流量计数")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_metrics)
+
     p = sub.add_parser("show", help="单个客户端详情")
     p.add_argument("name")
     p.add_argument("--json", action="store_true")
@@ -1414,6 +1949,9 @@ def build_parser():
     p.add_argument("--tunnel", choices=["lan", "full", "custom"], default="lan")
     p.add_argument("--allowed-ips", help="--tunnel custom 时使用")
     p.add_argument("--endpoint", help="覆盖对外 Endpoint")
+    p.add_argument("--peer-endpoint", help="服务端 peer 的静态 Endpoint")
+    p.add_argument("--peer-keepalive", type=int, default=None, help="服务端 peer PersistentKeepalive")
+    p.add_argument("--client-keepalive", type=int, default=25, help="下发给客户端的 PersistentKeepalive")
     p.add_argument("--dns", help="下发给客户端的 DNS")
     p.add_argument("--mtu", type=int)
     p.add_argument("--ip", help="手工指定 IP")
@@ -1443,6 +1981,11 @@ def build_parser():
     p.add_argument("--ip", help="改虚拟 IP")
     p.add_argument("--site-routes", help="此节点背后的局域网网段，逗号分隔；传空串表示清除")
     p.add_argument("--note")
+    p.add_argument("--new-name")
+    p.add_argument("--peer-endpoint")
+    p.add_argument("--peer-keepalive", type=int)
+    p.add_argument("--client-keepalive", type=int)
+    p.add_argument("--enabled", choices=["true", "false"])
     p.add_argument("--force", action="store_true", help="强制占用已被使用的 IP")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_update)
@@ -1518,11 +2061,24 @@ def build_parser():
     p.add_argument("--check", action="store_true", help="只比对当前配置是否一致")
     p.set_defaults(func=cmd_render)
 
+    p = sub.add_parser("plan", help="预览登记表与磁盘配置差异")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--request")
+    p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser("apply", help="锁内校验并应用已预览操作")
+    p.add_argument("--request", required=True)
+    p.add_argument("--revision", required=True)
+    p.add_argument("--confirm", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_apply)
+
     p = sub.add_parser("adopt", help="把现网配置纳管进登记表")
     p.add_argument("--yes", action="store_true")
     p.add_argument("--json", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="只预览差异，不写任何文件")
     p.add_argument("--emit", action="store_true", help="配合 --dry-run：直接输出将写入的配置（私钥遮罩）")
+    p.add_argument("--revision")
     p.set_defaults(func=cmd_adopt)
 
     p = sub.add_parser("backup", help="备份当前配置")
@@ -1562,7 +2118,10 @@ def main():
         IFACE = args.iface
         CONF = WG_DIR / f"{IFACE}.conf"
     need_root()
-    return args.func(args) or 0
+    readonly = {"list", "status", "show", "qr", "metrics", "plan", "render", "doctor", "ip-pool", "backups"}
+    if args.cmd in readonly or (args.cmd == "adopt" and args.dry_run):
+        return args.func(args) or 0
+    return run_transaction(args)
 
 
 if __name__ == "__main__":

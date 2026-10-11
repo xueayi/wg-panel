@@ -24,26 +24,7 @@ SERVER_PUB = "FAKEPUB_SERVER"
 ENDPOINT = "vpn.example.com:10015"
 LAN_NETS = ["10.8.1.0/24", "192.168.1.0/24"]
 
-FAKE_WG = '''#!/usr/bin/env python3
-import hashlib, sys
-a = sys.argv[1:]
-if not a:
-    sys.exit(1)
-if a[0] == "genkey":
-    seed = hashlib.sha256(str(hash(tuple(a))).encode()).hexdigest()[:16]
-    print("FAKEPRIV_" + seed)
-elif a[0] == "pubkey":
-    priv = sys.stdin.read().strip()
-    print("FAKEPUB_" + hashlib.sha256(priv.encode()).hexdigest()[:16])
-elif a[0] == "show" and "dump" in a:
-    print("FAKEPRIV_SERVER\\tFAKEPUB_SERVER\\t10015\\toff")
-elif a[0] == "show" and a[-1] == "public-key":
-    print("FAKEPUB_SERVER")
-elif a[0] == "syncconf":
-    sys.exit(0)
-else:
-    sys.exit(0)
-'''
+FAKE_WG = '#!/usr/bin/env python3\nimport hashlib, json, os, sys\nfrom pathlib import Path\na = sys.argv[1:]\nstate = Path(os.environ[\'WG_BASE\']) / \'fake-runtime.json\'\nif not a:\n    sys.exit(1)\nif a[0] == "genkey":\n    print(\'FAKEPRIV_\' + os.urandom(8).hex())\nelif a[0] == "pubkey":\n    priv = sys.stdin.read().strip()\n    print(\'FAKEPUB_SERVER\' if priv == \'FAKEPRIV_SERVER\' else "FAKEPUB_" + hashlib.sha256(priv.encode()).hexdigest()[:16])\nelif a[0] == "show" and "dump" in a:\n    print("FAKEPRIV_SERVER\\tFAKEPUB_SERVER\\t10015\\toff")\n    for peer in json.loads(state.read_text()) if state.exists() else []:\n        print(\'\\t\'.join([peer[\'PublicKey\'],peer.get(\'PresharedKey\',\'(none)\'),peer.get(\'Endpoint\',\'(none)\'),peer[\'AllowedIPs\'], \'0\',\'0\',\'0\',peer.get(\'PersistentKeepalive\',\'0\')]))\nelif a[0] == "show" and a[-1] == "public-key":\n    print("FAKEPUB_SERVER")\nelif a[0] == "syncconf":\n    peers=[]; cur=None\n    for line in Path(a[-1]).read_text().splitlines():\n        line=line.strip()\n        if line == \'[Peer]\': cur={}; peers.append(cur)\n        elif \'=\' in line and cur is not None:\n            key,value=line.split(\'=\',1);cur[key.strip()]=value.strip()\n    state.write_text(json.dumps(peers))\n    sys.exit(0)\nelse:\n    sys.exit(0)\n'
 
 FAKE_WG_QUICK = '''#!/usr/bin/env python3
 import sys
@@ -99,6 +80,14 @@ def wg(tmp_path) -> dict:
     fake_bin = _write_exec(tmp_path / "fake-wg", FAKE_WG)
     fake_quick = _write_exec(tmp_path / "fake-wg-quick", FAKE_WG_QUICK)
 
+    fake_ip = _write_exec(tmp_path / 'fake-ip', """#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+p = Path(os.environ['WG_BASE']) / 'ip-commands.json'
+rows=json.loads(p.read_text()) if p.exists() else []
+rows.append(sys.argv[1:]);p.write_text(json.dumps(rows))
+if '-j' in sys.argv: print('[]')
+""")
     env = dict(os.environ)
     env.update({
         "WG_DIR": str(wg_dir),
@@ -107,6 +96,7 @@ def wg(tmp_path) -> dict:
         "WG_BIN": str(fake_bin),
         "WG_QUICK_BIN": str(fake_quick),
         "WG_SKIP_ROOT": "1",
+        "WG_IP_BIN": str(fake_ip),
     })
 
     def run(*args, expect_ok: bool = True, as_json: bool = True) -> dict:
@@ -145,4 +135,5 @@ def wg(tmp_path) -> dict:
         "base": base,
         "clients_dir": base / "clients",
         "backups": base / "backup",
+        "fake_wg": fake_bin,
     }

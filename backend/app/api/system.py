@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..config import settings
 from ..drivers.base import ExecutorError
-from .deps import agent_call, get_executor, reset_executor
+from .deps import agent_call, current_reader, get_executor, reset_executor
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -27,7 +27,7 @@ def health():
 
 
 @router.get("/status")
-def status(request: Request, _: str = Depends(current_user_dep)):
+def status(request: Request, _: str = Depends(current_reader)):
     """面板 ↔ 中转节点的连接状态，含启动自检发现的问题。"""
     executor = get_executor()
     info = {"driver": executor.describe(), "problems": settings.validate(), "connected": False}
@@ -74,6 +74,8 @@ def doctor_fix(request: Request, code: str = Query(...), name: str = Query(""),
         if not name:
             raise HTTPException(status_code=400, detail="重签配置需要带上客户端名（name=…）")
         args = ["resign", name]
+    elif code == "adopt":
+        raise HTTPException(status_code=428, detail="首次纳管需要先通过纳管预览确认")
     else:
         args = FIXABLE.get(code)
         if not args:
@@ -155,8 +157,15 @@ def restore(name: str, request: Request, confirm: bool = Query(False),
     return {"restored": name, **out} if isinstance(out, dict) else {"restored": name}
 
 
+@router.get("/adopt-preview")
+@router.get("/system/adopt-preview", include_in_schema=False)
+def adopt_preview(request: Request, _: str = Depends(current_user_dep)):
+    return agent_call(get_executor(), ["adopt", "--dry-run"], store=_store(request))
+
+
 @router.post("/adopt")
-def adopt(request: Request, confirm: bool = Query(False), _: str = Depends(current_user_dep)):
+def adopt(request: Request, confirm: bool = Query(False), revision: str = Query(""),
+          _: str = Depends(current_user_dep)):
     """首次纳管既有 wg0：把现网 peer 收进登记表，并按登记表重渲染配置。
 
     写前自动备份，SaveConfig 一并改成 false。幂等，可重复执行。
@@ -164,8 +173,11 @@ def adopt(request: Request, confirm: bool = Query(False), _: str = Depends(curre
     if not confirm:
         raise HTTPException(status_code=428,
                             detail="纳管会重写 wg0.conf（先自动备份），需要 confirm=true")
-    out = agent_call(get_executor(), ["adopt", "--yes"], action="system.adopt",
+    if not revision:
+        raise HTTPException(status_code=428, detail="首次纳管需要先预览并提交 revision")
+    out = agent_call(get_executor(), ["adopt", "--yes", "--revision", revision], action="system.adopt",
                      confirmed=True, store=_store(request))
+    request.app.state.state_cache.refresh(get_executor())
     _store(request).audit("system.adopt", "", "ok", "接管已有配置")
     return out
 

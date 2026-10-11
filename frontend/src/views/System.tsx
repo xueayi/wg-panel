@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, AuditRow, Backup, Status } from '../api'
+import { api, AuditRow, Backup, Status, confirmAdoption } from '../api'
 import { Badge, Button, Card, CardHeader, Empty, Hint } from '../components/ui'
 
 const ACTION_LABEL: Record<string, string> = {
@@ -30,6 +30,7 @@ export default function System({ onToast, nonce }: { onToast: (m: string, tone?:
   const [status, setStatus] = useState<Status | null>(null)
   const [backups, setBackups] = useState<Backup[]>([])
   const [audit, setAudit] = useState<AuditRow[]>([])
+  const [adopting, setAdopting] = useState(false)
 
   const load = async () => {
     try {
@@ -63,14 +64,15 @@ export default function System({ onToast, nonce }: { onToast: (m: string, tone?:
   }
 
   const adopt = async () => {
-    if (!confirm('接管既有的 wg0.conf：把现网 peer 收进登记表并重写配置（会先自动备份）。\n\n幂等操作，可重复执行。继续？'))
-      return
+    setAdopting(true)
     try {
-      await api.adopt()
+      if (!await confirmAdoption()) return
       onToast('已接管已有配置')
       load()
     } catch (e) {
       onToast((e as Error).message, 'err')
+    } finally {
+      setAdopting(false)
     }
   }
 
@@ -102,8 +104,8 @@ export default function System({ onToast, nonce }: { onToast: (m: string, tone?:
                 <Hint text="重新建立 SSH 连接，并把面板内核脚本（wgagent.py）重新传到节点上——升级面板之后点它，让节点上的脚本跟面板一致。只读，不改任何 VPN 配置。" />
               </span>
               <span className="inline-flex items-center gap-1">
-                <Button onClick={adopt}>接管已有配置</Button>
-                <Hint text="接管节点上现有的 wg0.conf 里的 peer 收进面板的登记表，之后配置由面板统一管理。会先自动备份，再把 SaveConfig 改成 false 并重渲染配置（不断线）。幂等，可重复执行。" />
+                <Button disabled={adopting} onClick={adopt}>{adopting ? '读取预览…' : '接管已有配置'}</Button>
+                <Hint text="先只读预览现有配置，显示客户端、可导出状态和风险。确认后自动备份并纳管，预览后配置发生变化时会拒绝执行。" />
               </span>
             </div>
           }

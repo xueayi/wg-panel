@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 import time
+import json
+import hashlib
+import copy
+import threading
 
 from .base import ExecutorError
 
@@ -17,7 +21,7 @@ IFACE = {
 }
 
 
-def _conf(name: str, ip: str, endpoint: str, allowed: list[str]) -> str:
+def _conf(name: str, ip: str, endpoint: str, allowed: list[str], keepalive: int = 25) -> str:
     return "\n".join([
         "[Interface]",
         "PrivateKey = <redacted>",
@@ -28,7 +32,7 @@ def _conf(name: str, ip: str, endpoint: str, allowed: list[str]) -> str:
         "PublicKey = MOCKPUB_SERVER_EXAMPLE",
         f"Endpoint = {endpoint}",
         f"AllowedIPs = {', '.join(allowed)}",
-        "PersistentKeepalive = 25",
+        f"PersistentKeepalive = {keepalive}",
         "",
         f"# {name}",
     ])
@@ -38,6 +42,7 @@ class MockExecutor:
     """内存里维护一份假的中转节点，命令语义与 wgagent.py 保持一致。"""
 
     def __init__(self, settings=None):
+        self._lock = threading.RLock()
         self.endpoint = "vpn.example.com:10015"
         self.lan = ["10.8.1.0/24", "192.168.1.0/24"]
         self.dns = "192.168.1.1"
@@ -58,6 +63,9 @@ class MockExecutor:
                            "note": "示例：已停用", "created": "2025-11-11",
                            "handshake": int(time.time()) - 86400 * 40, "rx": 1_048_576, "tx": 524_288},
         }
+        for name, client in self.clients.items():
+            client["pubkey"] = f"MOCKPUB_{name.upper().replace(chr(45), chr(95))[:16]}_EXAMPLE"
+            client.update(endpoint="", keepalive=0, client_keepalive=25)
         self.backups = [
             {"name": "wg0.conf.20261002-081500.adopt", "size": 2412, "mtime": "2026-10-02 08:15:00"},
             {"name": "wg0.conf.20261001-193022.add-iphone15", "size": 2288, "mtime": "2026-10-01 19:30:22"},
@@ -70,13 +78,18 @@ class MockExecutor:
                 ("离线" if not c["disabled"] else "已停用")
         return {
             "name": name,
-            "pubkey": f"MOCKPUB_{name.upper().replace('-', '_')[:16]}_EXAMPLE",
+            "pubkey": c["pubkey"],
             "ip": c["ip"],
             "enabled": not c["disabled"],
             "disabled": c["disabled"],
             "allowed_ips": [f"{c['ip']}/32"],
             "client_allowed_ips": self._allowed_for(c),
             "endpoint": "198.51.100.7:43122" if state == "在线" else "",
+            "configured_endpoint": c.get("endpoint", ""),
+            "keepalive": c.get("keepalive", 0),
+            "client_keepalive": c.get("client_keepalive", 25),
+            "exportable": True, "export_reason": "",
+            "site_routes": c.get("site_routes", []),
             "state": state,
             "handshake": c["handshake"],
             "handshake_human": self._human(c["handshake"]),
@@ -87,6 +100,21 @@ class MockExecutor:
             "in_registry": True, "in_conf": not c["disabled"],
             "in_live": not c["disabled"], "has_client_files": True,
         }
+
+    def _edit(self, client, args):
+        fields = {"--tunnel": "tunnel", "--ip": "ip", "--note": "note", "--peer-endpoint": "endpoint",
+                  "--peer-keepalive": "keepalive", "--client-keepalive": "client_keepalive",
+                  "--allowed-ips": "custom_allowed", "--site-routes": "site_routes"}
+        for flag, key in fields.items():
+            if flag in args:
+                value = args[args.index(flag) + 1]
+                if key in {"keepalive", "client_keepalive"}:
+                    value = int(value)
+                if key in {"custom_allowed", "site_routes"}:
+                    value = [v.strip() for v in value.split(",") if v.strip()]
+                client[key] = value
+        if "--enabled" in args:
+            client["disabled"] = args[args.index("--enabled") + 1] == "false"
 
     def _allowed_for(self, c: dict) -> list[str]:
         if c["tunnel"] == "full":
@@ -116,6 +144,10 @@ class MockExecutor:
 
     # ── 命令 ──
     def run_agent(self, args: list[str]) -> dict | list:
+        with self._lock:
+            return self._run_agent(args)
+
+    def _run_agent(self, args: list[str]) -> dict | list:
         if not args:
             raise ExecutorError("空命令")
         cmd, rest = args[0], args[1:]
@@ -131,13 +163,24 @@ class MockExecutor:
             rows = [self._row(n) for n in self.clients]
             return {"interface": IFACE, "rows": rows,
                     "online": sum(1 for r in rows if r["state"] == "在线")}
+        if cmd == "metrics":
+            return {
+                "interface": "wg0",
+                "server_public_key": self.server_pub,
+                "peers": [
+                    {"public_key": self._row(name)["pubkey"],
+                     "handshake": data["handshake"], "rx": data["rx"], "tx": data["tx"]}
+                    for name, data in self.clients.items()
+                    if not data["disabled"]
+                ],
+            }
         if cmd == "show":
             name = positional[0]
             if name not in self.clients:
                 raise ExecutorError(f"找不到客户端：{name}")
             row = self._row(name)
             row["conf_text"] = _conf(name, self.clients[name]["ip"], self.endpoint,
-                                     self._allowed_for(self.clients[name]))
+                                     self._allowed_for(self.clients[name]), self.clients[name].get("client_keepalive", 25))
             return row
         if cmd == "ip-pool":
             used = [{"ip": c["ip"], "name": n} for n, c in
@@ -154,16 +197,21 @@ class MockExecutor:
             if "--tunnel" in rest:
                 idx = rest.index("--tunnel")
                 tunnel = rest[idx + 1]
-            ip = self._next_ip()
+            ip = rest[rest.index("--ip") + 1] if "--ip" in rest else self._next_ip()
+            if any(c["ip"] == ip for c in self.clients.values()):
+                raise ExecutorError("IP 已被占用")
             self.clients[name] = {"ip": ip, "tunnel": tunnel, "disabled": False,
                                   "note": "", "created": "2026-10-02",
-                                  "handshake": 0, "rx": 0, "tx": 0}
+                                  "handshake": 0, "rx": 0, "tx": 0,
+                                  "endpoint": "", "keepalive": 0, "client_keepalive": 25,
+                                  "pubkey": "MOCKPUB_" + hashlib.sha256(name.encode()).hexdigest()[:16]}
+            self._edit(self.clients[name], rest)
             out = {"name": name, "ip": ip, "pubkey": f"MOCKPUB_{name.upper()[:16]}_EXAMPLE",
                    "tunnel": tunnel, "endpoint": self.endpoint,
                    "client_allowed_ips": self._allowed_for(self.clients[name])}
             if "--include-private" in flags:
                 out["conf_text"] = _conf(name, ip, self.endpoint,
-                                         self._allowed_for(self.clients[name]))
+                                         self._allowed_for(self.clients[name]), self.clients[name].get("client_keepalive", 25))
             return out
         if cmd in ("disable", "enable"):
             name = positional[0]
@@ -171,6 +219,19 @@ class MockExecutor:
                 raise ExecutorError(f"找不到客户端：{name}")
             self.clients[name]["disabled"] = cmd == "disable"
             return {"name": name, "disabled": cmd == "disable"}
+        if cmd == "update":
+            name = positional[0]
+            if name not in self.clients:
+                raise ExecutorError(f"找不到客户端：{name}")
+            c = copy.deepcopy(self.clients[name])
+            new_name = rest[rest.index("--new-name") + 1] if "--new-name" in rest else name
+            if new_name != name and new_name in self.clients:
+                raise ExecutorError(f"客户端已存在：{new_name}")
+            self._edit(c, rest)
+            self.clients.pop(name)
+            self.clients[new_name] = c
+            name = new_name
+            return {"name": name, "ip": c["ip"], "tunnel": c["tunnel"], "note": c.get("note", "")}
         if cmd == "remove":
             name = positional[0]
             if name not in self.clients:
@@ -199,9 +260,46 @@ class MockExecutor:
             return self.backups
         if cmd == "doctor":
             return {"problems": [], "warnings": ["示例驱动：数据为模拟值，不反映真实节点"]}
+        if cmd in {"plan", "apply"}:
+            if "--request" not in rest:
+                return {"same": True, "changed": [], "warnings": []}
+            request = json.loads(rest[rest.index("--request") + 1])
+            stable = {"clients": self.clients, "endpoint": self.endpoint, "lan": self.lan,
+                      "dns": self.dns, "mtu": self.mtu, "request": request}
+            revision = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()
+            operation, name, params = request["operation"], request["name"], request["params"]
+            command = {"add_peer": "add", "update_peer": "update", "remove_peer": "remove"}[operation]
+            if command == "add" and name in self.clients:
+                raise ExecutorError("客户端已存在")
+            if command != "add" and name not in self.clients:
+                raise ExecutorError("客户端不存在")
+            args = [command, name]
+            flag_map = {"tunnel": "--tunnel", "ip": "--ip", "allowed_ips": "--allowed-ips",
+                        "site_routes": "--site-routes", "net": "--net", "dns": "--dns", "mtu": "--mtu",
+                        "note": "--note", "new_name": "--new-name", "endpoint": "--peer-endpoint",
+                        "keepalive": "--peer-keepalive", "client_keepalive": "--client-keepalive",
+                        "enabled": "--enabled", "advertised_endpoint": "--endpoint"}
+            for key, value in params.items():
+                args.extend([flag_map[key], str(value).lower() if isinstance(value, bool) else str(value)])
+            if cmd == "plan":
+                return {"revision": revision, "operation": operation, "name": name, "params": params,
+                        "affected_peers": [name], "destructive": command == "remove", "warnings": []}
+            if "--revision" not in rest or rest[rest.index("--revision") + 1] != revision:
+                raise ExecutorError("配置已变化，请重新预览")
+            if command == "remove":
+                if "--confirm" not in rest:
+                    raise ExecutorError("删除需要确认")
+                args.append("--yes")
+            return self._run_agent(args)
         if cmd == "sync":
             return {"ok": True}
         if cmd == "adopt":
+            revision = hashlib.sha256(json.dumps(self.clients, sort_keys=True).encode()).hexdigest()
+            if "--dry-run" in flags:
+                return {"adopted": len(self.clients), "revision": revision,
+                        "clients": [self._row(name) for name in self.clients], "warnings": []}
+            if "--revision" not in rest or rest[rest.index("--revision") + 1] != revision:
+                raise ExecutorError("配置已变化，请重新预览")
             return {"adopted": len(self.clients), "advertised_endpoint": self.endpoint,
                     "client_lan_allowed_ips": self.lan}
         raise ExecutorError(f"mock 驱动未实现命令：{cmd}")

@@ -7,7 +7,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from .deps import agent_call, current_user, get_executor
+from ..config import settings
+from .deps import agent_call, current_reader, current_user, get_executor
 
 router = APIRouter(prefix="/api", tags=["server"])
 
@@ -25,7 +26,7 @@ def _store(request: Request):
 
 
 @router.get("/server")
-def get_server(request: Request, _: str = Depends(current_user)):
+def get_server(request: Request, _: str = Depends(current_reader)):
     """接口状态 + 中转节点参数 + 在线统计，一屏给全。"""
     data = agent_call(get_executor(), ["list"], store=_store(request))
     reg = data.get("registry", {}) or {}
@@ -33,9 +34,9 @@ def get_server(request: Request, _: str = Depends(current_user)):
     iface = data.get("interface", {}) or {}
     return {
         "interface": {
-            "name": "wg0",
-            "address": iface.get("Address", ""),
-            "listen_port": iface.get("ListenPort", ""),
+            "name": settings.iface,
+            "address": iface.get("Address", iface.get("address", "")),
+            "listen_port": iface.get("ListenPort", iface.get("listen_port", "")),
             "public_key": "",  # 由 status 补全
             "save_config": iface.get("SaveConfig", "false"),
         },
@@ -76,6 +77,7 @@ def patch_server(body: ServerPatch, request: Request, _: str = Depends(current_u
             action="server.set_mtu", target=str(body.mtu), store=_store(request))
     if not results:
         return {"changed": False}
+    request.app.state.state_cache.refresh(get_executor())
     _store(request).audit("server.update", "", "ok", ",".join(results))
     return {"changed": True, **results}
 

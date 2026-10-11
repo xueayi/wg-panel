@@ -41,6 +41,11 @@ class Settings:
         # 认证方式：key（默认，推荐） / password
         self.ssh_auth: str = (_env("WGP_SSH_AUTH", "key") or "key").lower()
 
+        # 本地 Docker 模式：面板与 WireGuard 共用 network namespace 和配置卷
+        self.local_wg_dir: Path = Path(_env("WGP_LOCAL_CONFIG_DIR", "/config/wg_confs"))
+        self.local_state_dir: Path = Path(_env("WGP_LOCAL_STATE_DIR", "/config/.wg-panel"))
+        self.local_timeout: int = int(_env("WGP_LOCAL_TIMEOUT", "20") or 20)
+
         # 面板自身
         self.data_dir: Path = Path(_env("WGP_DATA_DIR", "./data"))
         # 密码只从 600 权限的文件读，不进 DB 明文
@@ -48,19 +53,24 @@ class Settings:
             "WGP_SSH_PASSWORD_FILE", str(self.data_dir / "keys" / "ssh_password"))
         self.admin_password: str = _env("WGP_ADMIN_PASSWORD", "")
         self.secret_key: str = _env("WGP_SECRET_KEY", "")
+        self.api_token: str = _env("WGP_API_TOKEN", "")
         self.session_hours: int = int(_env("WGP_SESSION_HOURS", "12") or 12)
 
     # 面板上可改的字段（白名单，避免把任意属性暴露成可写）
     TUNABLE = {
-        "driver", "read_only", "iface", "ssh_host", "ssh_user", "ssh_port",
+        "read_only", "iface", "ssh_host", "ssh_user", "ssh_port",
         "ssh_key", "ssh_remote_tool", "ssh_timeout", "known_hosts", "agent_path",
-        "ssh_auth", "ssh_password_file",
+        "ssh_auth", "ssh_password_file", "local_wg_dir", "local_state_dir", "local_timeout",
     }
 
     def apply(self, data: dict) -> None:
         """用面板里存下来的值覆盖 env 默认值（类型已在 API 层转好）。"""
         for k, v in (data or {}).items():
             if k in self.TUNABLE and v is not None:
+                if k in {"local_wg_dir", "local_state_dir"}:
+                    v = Path(v)
+                elif k in {"ssh_port", "ssh_timeout", "local_timeout"}:
+                    v = int(v)
                 setattr(self, k, v)
 
     def snapshot(self) -> dict:
@@ -69,6 +79,8 @@ class Settings:
     def validate(self) -> list[str]:
         """启动自检：只报告问题，不抛异常（面板要能起来告诉你哪里错了）。"""
         problems = []
+        if self.driver not in {"ssh", "local", "mock"}:
+            problems.append(f"未知驱动：{self.driver}（可选 ssh、local、mock）")
         if self.driver == "ssh" and not self.ssh_host:
             problems.append("还没配置中转节点地址——去「连接设置」填上服务地址（Endpoint）")
         using_password = self.ssh_auth == "password"
@@ -76,7 +88,12 @@ class Settings:
             problems.append(f"SSH 私钥不存在：{self.ssh_key}（只读挂载，或在「连接设置」里上传）")
         if self.driver == "ssh" and using_password and not Path(self.ssh_password_file).exists():
             problems.append("选了密码登录但还没设置密码——去「连接设置」里填")
-        if not Path(self.agent_path).exists():
+        if self.driver == "local":
+            if not Path(self.agent_path).exists():
+                problems.append(f"找不到本地 agent：{self.agent_path}")
+            if not self.local_wg_dir.exists():
+                problems.append(f"本地 WireGuard 配置目录不存在：{self.local_wg_dir}")
+        if self.driver != "local" and not Path(self.agent_path).exists():
             problems.append(f"找不到 wgagent.py：{self.agent_path}")
         if not self.secret_key:
             problems.append("未设 WGP_SECRET_KEY，将使用临时密钥（重启后需重新登录）")

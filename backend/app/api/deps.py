@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import secrets
+
 from fastapi import HTTPException, Request
 
 from ..config import settings
 from ..drivers.base import DESTRUCTIVE_COMMANDS, ExecutorError, is_write
 from ..drivers.mock import MockExecutor
 from ..drivers.ssh import SshExecutor
+from ..drivers.local import LocalExecutor
 
 _executor = None
+_sampling_executor = None
+_state_executor = None
 
 
 def build_executor():
     if settings.driver == "ssh":
         return SshExecutor(settings)
-    return MockExecutor(settings)
+    if settings.driver == "local":
+        return LocalExecutor(settings)
+    if settings.driver == "mock":
+        return MockExecutor(settings)
+    raise ExecutorError(f"未知驱动：{settings.driver}")
 
 
 def get_executor():
@@ -26,9 +35,27 @@ def get_executor():
     return _executor
 
 
+def get_sampling_executor():
+    global _sampling_executor
+    if _sampling_executor is None:
+        _sampling_executor = get_executor() if settings.driver == "mock" else build_executor()
+    return _sampling_executor
+
+
+def get_state_executor():
+    global _state_executor
+    if _state_executor is None:
+        _state_executor = get_executor() if settings.driver == "mock" else build_executor()
+    return _state_executor
+
+
 def reset_executor() -> None:
-    global _executor
-    _executor = None
+    global _executor, _sampling_executor, _state_executor
+    for executor in (_executor, _sampling_executor, _state_executor):
+        client = getattr(executor, "_client", None)
+        if client:
+            client.close()
+    _executor = _sampling_executor = _state_executor = None
 
 
 def current_user(request: Request) -> str:
@@ -39,6 +66,22 @@ def current_user(request: Request) -> str:
     if not payload:
         raise HTTPException(status_code=401, detail="未登录或会话已过期")
     return payload.get("sub", "")
+
+
+def current_reader(request: Request) -> str:
+    """会话用户或环境变量 API token；token 只用于受限只读路由。"""
+    try:
+        return current_user(request)
+    except HTTPException:
+        token = request.headers.get("X-API-Token", "").strip()
+        if not token:
+            auth = request.headers.get("Authorization", "")
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+        configured = getattr(settings, "api_token", "")
+        if request.method == "GET" and request.url.path in {"/api/state", "/api/traffic", "/api/plan", "/api/peers", "/api/server"} and configured and token and secrets.compare_digest(token.encode(), configured.encode()):
+            return "api-token"
+        raise HTTPException(status_code=401, detail="未登录或 API token 无效")
 
 
 def guard_write(args: list[str], confirmed: bool = False) -> None:
@@ -62,4 +105,5 @@ def agent_call(executor, args: list[str], *, action: str = "", target: str = "",
     except ExecutorError as exc:
         if store and action:
             store.audit(action, target, "failed", str(exc))
-        raise HTTPException(status_code=400, detail=str(exc))
+        code = 409 if any(x in str(exc) for x in ("配置已变化", "外部漂移")) else 400
+        raise HTTPException(status_code=code, detail=str(exc))

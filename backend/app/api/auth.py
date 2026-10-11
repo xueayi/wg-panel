@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import secrets
+import time
+import threading
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -15,6 +17,10 @@ from .deps import current_user
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 COOKIE = "wgp_session"
+_failures: dict[str, list[float]] = {}
+_failure_lock = threading.Lock()
+_MAX_FAILURES = 10
+_LOCKOUT_SECONDS = 300
 
 
 class LoginBody(BaseModel):
@@ -61,8 +67,27 @@ def login(body: LoginBody, request: Request, response: Response):
         raise HTTPException(status_code=409,
                             detail="面板尚未初始化：请设置 WGP_ADMIN_PASSWORD 后重启容器")
     username, stored_hash = admin
-    if body.username != username or not verify_password(body.password, stored_hash):
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    client_key = request.client.host if request.client else "unknown"
+    now = time.time()
+    with _failure_lock:
+        for key in list(_failures):
+            recent = [ts for ts in _failures[key] if now - ts < _LOCKOUT_SECONDS]
+            if recent:
+                _failures[key] = recent
+            else:
+                _failures.pop(key, None)
+        recent = _failures.get(client_key, [])
+        if len(recent) >= _MAX_FAILURES:
+            retry = max(1, int(_LOCKOUT_SECONDS - (now - recent[0])))
+            raise HTTPException(status_code=429, detail="登录失败次数过多，请稍后再试",
+                                headers={"Retry-After": str(retry)})
+        if body.username != username or not verify_password(body.password, stored_hash):
+            if client_key not in _failures and len(_failures) >= 4096:
+                raise HTTPException(status_code=429, detail="登录请求过多，请稍后再试")
+            recent.append(now)
+            _failures[client_key] = recent
+            raise HTTPException(status_code=401, detail="用户名或密码错误")
+        _failures.pop(client_key, None)
     token = create_token(request.app.state.secret, username, settings.session_hours)
     response.set_cookie(
         COOKIE, token,

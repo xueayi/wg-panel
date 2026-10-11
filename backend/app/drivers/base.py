@@ -17,7 +17,7 @@ class ExecutorError(Exception):
 
 # 只读命令：WGP_READ_ONLY=1 时仍然放行（用于上线前先验证纳管是否正确）
 READ_ONLY_COMMANDS = {
-    "list", "status", "show", "ip-pool", "doctor", "backups", "render", "qr",
+    "list", "status", "show", "metrics", "plan", "ip-pool", "doctor", "backups", "render", "qr",
 }
 
 # 破坏性命令：前端必须二次确认
@@ -25,6 +25,8 @@ DESTRUCTIVE_COMMANDS = {"remove", "restore", "prune", "adopt"}
 
 
 def is_write(args: list[str]) -> bool:
+    if args and args[0] == "adopt" and "--dry-run" in args:
+        return False
     return bool(args) and args[0] not in READ_ONLY_COMMANDS
 
 

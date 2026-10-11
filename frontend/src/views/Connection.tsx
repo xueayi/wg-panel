@@ -11,6 +11,9 @@ export default function Connection({ onToast, nonce }: { onToast: (m: string, to
   const [tool, setTool] = useState('/root/wireguard/wgagent.py')
   const [readOnly, setReadOnly] = useState(false)
   const [auth, setAuth] = useState<'key' | 'password'>('key')
+  const [driver, setDriver] = useState<'ssh' | 'local' | 'mock'>('ssh')
+  const [localWgDir, setLocalWgDir] = useState('/config/wg_confs')
+  const [localStateDir, setLocalStateDir] = useState('/config/.wg-panel')
 
   const [keyText, setKeyText] = useState('')
   const [sshPassword, setSshPassword] = useState('')
@@ -33,6 +36,9 @@ export default function Connection({ onToast, nonce }: { onToast: (m: string, to
       setTool(s.ssh_remote_tool)
       setReadOnly(s.read_only)
       setAuth(s.ssh_auth === 'password' ? 'password' : 'key')
+      setDriver(s.driver === 'local' || s.driver === 'mock' ? s.driver : 'ssh')
+      setLocalWgDir(s.local_wg_dir || '/config/wg_confs')
+      setLocalStateDir(s.local_state_dir || '/config/.wg-panel')
       setMe(who.username)
       setNewUser(who.username)
     } catch (e) {
@@ -53,13 +59,18 @@ export default function Connection({ onToast, nonce }: { onToast: (m: string, to
     setBusy('save')
     try {
       await api.patchConnSettings({
-        ssh_host: host.trim(),
-        ssh_port: Number(port) || 22,
-        ssh_user: user.trim(),
         iface: iface.trim(),
-        ssh_remote_tool: tool.trim(),
         read_only: readOnly,
-        ssh_auth: auth,
+        ...(driver === 'ssh' ? {
+          ssh_host: host.trim(),
+          ssh_port: Number(port) || 22,
+          ssh_user: user.trim(),
+          ssh_remote_tool: tool.trim(),
+          ssh_auth: auth,
+        } : driver === 'local' ? {
+          local_wg_dir: localWgDir.trim(),
+          local_state_dir: localStateDir.trim(),
+        } : {}),
       })
       onToast('已保存，连接已按新参数重建')
       load()
@@ -146,7 +157,7 @@ export default function Connection({ onToast, nonce }: { onToast: (m: string, to
       <Card>
         <CardHeader
           title="中转节点连接"
-          desc="面板通过 SSH 遥控这台机器上的 WireGuard。初始值来自容器环境变量，在这里改过之后以这里的为准。"
+          desc={driver === 'ssh' ? '通过 SSH 管理远端 WireGuard，连接参数保存后生效。' : driver === 'local' ? '通过本地 agent 管理共享网络空间中的 WireGuard。' : '模拟模式仅用于开发联调。'}
           action={
             <div className="flex items-center gap-2">
               <Button disabled={busy === 'test'} onClick={test}>
@@ -159,6 +170,22 @@ export default function Connection({ onToast, nonce }: { onToast: (m: string, to
           }
         />
         <div className="grid gap-4 px-5 py-4 sm:grid-cols-2">
+          <Field label="管理模式" hint="由启动配置 WGP_DRIVER 决定，切换模式需修改启动配置并重建容器。">
+            <div className="flex h-[38px] items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] text-slate-700">
+              {driver === 'ssh' ? 'SSH 远程节点' : driver === 'local' ? 'Docker 本地节点' : '内存模拟（开发）'}
+            </div>
+          </Field>
+          {driver === 'local' && (
+            <>
+              <Field label="WireGuard 配置目录" hint="默认对应 linuxserver/wireguard 的 /config/wg_confs">
+                <input className={inputClass} value={localWgDir} onChange={(e) => setLocalWgDir(e.target.value)} />
+              </Field>
+              <Field label="面板状态目录" hint="登记表、客户端密钥和备份都在这里">
+                <input className={inputClass} value={localStateDir} onChange={(e) => setLocalStateDir(e.target.value)} />
+              </Field>
+            </>
+          )}
+          {driver === 'ssh' && <>
           <Field label="服务地址（Endpoint）" hint="中转节点的公网 IP 或域名——客户端最终连的就是它">
             <input className={inputClass} value={host} onChange={(e) => setHost(e.target.value)} placeholder="203.0.113.10" />
           </Field>
@@ -212,6 +239,23 @@ export default function Connection({ onToast, nonce }: { onToast: (m: string, to
               </span>
             </button>
           </Field>
+          </>}
+          {driver !== 'ssh' && <Field label="WireGuard 接口名">
+            <input className={inputClass} value={iface} onChange={(e) => setIface(e.target.value)} placeholder="wg0" />
+          </Field>}
+          {driver !== 'ssh' && (
+            <Field label="只读模式" hint="打开后所有写操作被拒绝，适合先观察本地节点">
+              <button
+                onClick={() => setReadOnly(!readOnly)}
+                className={`flex h-[38px] w-full items-center justify-between rounded-lg border px-3 text-[13px] transition ${readOnly ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-slate-200 bg-white text-slate-600'}`}
+              >
+                <span>{readOnly ? '只读（禁止修改）' : '可写（允许管理）'}</span>
+                <span className={`relative h-4 w-8 rounded-full ${readOnly ? 'bg-amber-400' : 'bg-slate-300'}`}>
+                  <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${readOnly ? 'left-4' : 'left-0.5'}`} />
+                </span>
+              </button>
+            </Field>
+          )}
         </div>
         {cur?.problems?.length ? (
           <div className="mx-5 mb-4 space-y-1.5">
@@ -222,6 +266,7 @@ export default function Connection({ onToast, nonce }: { onToast: (m: string, to
         ) : null}
       </Card>
 
+      {driver === 'ssh' && <>
       <Card>
         <CardHeader
           title={
@@ -303,6 +348,8 @@ export default function Connection({ onToast, nonce }: { onToast: (m: string, to
           </div>
         </div>
       </Card>
+
+      </>}
 
       <Card>
         <CardHeader

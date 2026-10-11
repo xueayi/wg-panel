@@ -8,9 +8,12 @@
 
 from __future__ import annotations
 
+import copy
+
 import base64
 import hashlib
 import re
+import shlex
 from pathlib import Path
 
 import paramiko
@@ -57,7 +60,7 @@ def key_public_line(path: str) -> str:
 
 class SshExecutor:
     def __init__(self, settings):
-        self.s = settings
+        self.s = copy.copy(settings)
         self._client: paramiko.SSHClient | None = None
 
     # ── 连接 ──
@@ -132,7 +135,7 @@ class SshExecutor:
         return p.read_bytes()
 
     def deploy(self, force: bool = False) -> bool:
-        tool = self.s.ssh_remote_tool
+        tool = shlex.quote(self.s.ssh_remote_tool)
         data = self.local_agent_bytes()
         want = hashlib.sha256(data).hexdigest()
         if not force:
@@ -157,8 +160,10 @@ class SshExecutor:
         argv += [str(a) for a in args]
         if "--json" not in argv:
             argv.append("--json")
-        cmd = " ".join(f"'{a}'" for a in argv)
+        cmd = shlex.join(argv)
         code, out, err = self._exec(cmd)
+        if code != 0 and not (args and args[0] == "doctor" and code == 1):
+            raise ExecutorError(scrub(err.strip() or f"agent 退出码 {code}"))
         # agent 用退出码表达「体检有问题」（doctor 发现问题时返回 1），不是「执行失败」。
         # 所以只要 stdout 是合法 JSON 就照常消费，退出码只在解析不出结果时才当错误。
         if not out.strip():
@@ -167,9 +172,9 @@ class SshExecutor:
             raise ExecutorError(scrub(err.strip() or f"agent 退出码 {code}（无输出）"))
         try:
             return parse_agent_output(out)
-        except ExecutorError:
+        except ExecutorError as exc:
             if code == 0:
-                raise
+                raise ExecutorError(scrub(str(exc))) from exc
             raise ExecutorError(scrub(err.strip() or out.strip() or f"agent 退出码 {code}"))
 
     def describe(self) -> dict:

@@ -58,6 +58,18 @@ docker compose up -d
 |---|---|
 | `WGP_ADMIN_PASSWORD` | 初始密码，仅**第一次启动**用于初始化账号 |
 | `WGP_SECRET_KEY` | 会话签名密钥，建议 `openssl rand -hex 32` |
+| `WGP_DRIVER` | `ssh`（默认）、`local`（Docker 同网络空间）或 `mock`（开发） |
+| `WGP_API_TOKEN` | 可选只读 API token，支持 `X-API-Token` 或 Bearer |
+
+需要直接管理同一 Docker 中的 WireGuard 时，复制 `docker-compose.local.example.yml`；
+面板和 WireGuard 必须一起重建以重新加入网络空间。
+
+只读 API 示例：
+
+```bash
+curl -H "X-API-Token: $WGP_API_TOKEN" http://127.0.0.1:13010/api/state
+curl -H "Authorization: Bearer $WGP_API_TOKEN" 'http://127.0.0.1:13010/api/traffic?window=3600'
+```
 
 节点地址、SSH 端口/用户、认证方式、接口名等见 `.env.example`（只是初始值，在「连接设置」里改更省事）。
 
@@ -70,5 +82,7 @@ cd backend && pip install -r requirements.txt
 WGP_DRIVER=mock WGP_DATA_DIR=./data uvicorn app.main:app --reload
 # WGP_DRIVER=mock 用内存里的假节点，不碰任何真实资源
 
-cd backend && pytest tests -q --basetemp=/tmp/wg-panel-pytest   # 44 条，不碰真实 /etc/wireguard
+cd backend && pytest tests -q --basetemp=/tmp/wg-panel-pytest   # 102 条，不碰真实 /etc/wireguard
+
+cd frontend && node --test tests/regressions.test.mjs             # 6 条界面回归
 ```

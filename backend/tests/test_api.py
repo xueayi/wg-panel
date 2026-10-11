@@ -154,6 +154,22 @@ def test_login_sets_httponly_cookie(tmp_path, monkeypatch):
         assert "httponly" in r.headers.get("set-cookie", "").lower()
 
 
+def test_login_rate_limits_repeated_failures(tmp_path):
+    from app.config import settings
+    settings.driver = "mock"
+    settings.data_dir = tmp_path / "data-rate"
+    settings.admin_password = PASS
+    settings.secret_key = "s"
+    from app.main import create_app
+    import app.api.auth as auth_api
+    auth_api._failures.clear()
+    with TestClient(create_app()) as c:
+        for _ in range(10):
+            assert c.post("/api/auth/login", json={"username": "admin", "password": "wrong"}).status_code == 401
+        r = c.post("/api/auth/login", json={"username": "admin", "password": PASS})
+        assert r.status_code == 429 and "Retry-After" in r.headers
+
+
 def test_list_peers(client):
     rows = client.get("/api/peers").json()
     assert rows["total"] >= 3
@@ -233,3 +249,197 @@ def test_ip_pool_exposes_next_free(client):
     assert pool["network"] == "10.8.1.0/24"
     assert pool["used_count"] >= 1
     assert pool["next"].startswith("10.8.1.")
+
+
+def test_readonly_token_can_read_state_and_cannot_read_private_config(client):
+    from app.config import settings
+    from fastapi.testclient import TestClient
+    settings.api_token = "dashboard-secret"
+    token_client = TestClient(client.app)
+    assert token_client.get("/api/state", headers={"X-API-Token": "dashboard-secret"}).status_code == 200
+    assert token_client.get("/api/peers", headers={"Authorization": "Bearer dashboard-secret"}).status_code == 200
+    assert token_client.get("/api/peers/laptop/config", headers={"X-API-Token": "dashboard-secret"}).status_code == 401
+
+
+def test_traffic_series_and_plan_revision(client):
+    from app.config import settings
+    settings.api_token = "dashboard-secret"
+    headers = {"X-API-Token": "dashboard-secret"}
+    traffic = client.get("/api/traffic?window=60", headers=headers)
+    assert traffic.status_code == 200
+    assert traffic.json()["window"] == 60
+    plan = client.post("/api/plan", headers=headers,
+                       json={"operation": "add_peer", "name": "tablet", "params": {"tunnel": "lan"}})
+    assert plan.status_code == 200
+    body = plan.json()
+    assert body["operation"] == "add_peer" and body["revision"]
+    applied = client.post("/api/apply",
+                          json={"revision": body["revision"], "operation": "add_peer",
+                                "name": "tablet", "params": {"tunnel": "lan"}})
+    assert applied.status_code == 200
+    assert any(p["name"] == "tablet" for p in client.get("/api/peers").json()["rows"])
+
+
+def test_plan_rejects_stale_revision(client):
+    from app.config import settings
+    settings.api_token = "dashboard-secret"
+    headers = {"X-API-Token": "dashboard-secret"}
+    plan = client.post("/api/plan", headers=headers,
+                       json={"operation": "add_peer", "name": "tablet", "params": {}}).json()
+    client.post("/api/peers", json={"name": "other-tablet", "tunnel": "lan"})
+    r = client.post("/api/apply",
+                    json={"revision": plan["revision"], "operation": "add_peer", "name": "tablet", "params": {}})
+    assert r.status_code == 409
+
+
+def test_readonly_token_cannot_apply_plan(client):
+    from app.config import settings
+    from fastapi.testclient import TestClient
+    settings.api_token = "dashboard-secret"
+    headers = {"X-API-Token": "dashboard-secret"}
+    token_client = TestClient(client.app)
+    plan = client.post("/api/plan", headers=headers,
+                       json={"operation": "add_peer", "name": "token-write", "params": {}}).json()
+    r = token_client.post("/api/apply", headers=headers,
+                    json={"revision": plan["revision"], "operation": "add_peer",
+                          "name": "token-write", "params": {}})
+    assert r.status_code == 401
+
+
+def test_local_paths_survive_save_and_database_reload(client):
+    from pathlib import Path
+    from app.config import settings
+    from app.main import create_app
+    client.patch('/api/settings', json={'local_wg_dir': '/tmp', 'local_state_dir': '/tmp/state'})
+    assert isinstance(settings.local_wg_dir, Path)
+    create_app()
+    assert isinstance(settings.local_wg_dir, Path)
+    settings.driver = 'local'
+    assert client.get('/api/settings').status_code == 200
+
+
+def test_driver_cannot_change_at_runtime(client):
+    assert client.patch('/api/settings', json={'driver': 'local'}).status_code == 422
+
+
+def test_readonly_token_cannot_post_plan(client):
+    from app.config import settings
+    from fastapi.testclient import TestClient
+    settings.api_token = 'readonly'
+    reader = TestClient(client.app)
+    assert reader.post('/api/plan', headers={'X-API-Token': 'readonly'}, json={
+        'operation': 'add_peer', 'name': 'blocked', 'params': {}}).status_code == 401
+
+
+def test_plan_tracks_endpoint_and_request_parameters(client):
+    request = {'operation': 'update_peer', 'name': 'laptop', 'params': {'note': 'new note'}}
+    plan = client.post('/api/plan', json=request).json()
+    client.patch('/api/peers/laptop', json={'endpoint': 'example.org:51820'})
+    assert client.post('/api/apply', json={**request, 'revision': plan['revision']}).status_code == 409
+    plan = client.post('/api/plan', json=request).json()
+    altered = {**request, 'params': {'note': 'different'}}
+    assert client.post('/api/apply', json={**altered, 'revision': plan['revision']}).status_code == 409
+
+
+def test_plan_validates_params_and_applies_custom_peer(client):
+    assert client.post('/api/plan', json={'operation': 'add_peer', 'name': '../bad', 'params': {}}).status_code == 422
+    assert client.post('/api/plan', json={'operation': 'add_peer', 'name': 'bad', 'params': {'keepalive': -1}}).status_code == 422
+    body = {'operation': 'add_peer', 'name': 'custom', 'params': {
+        'tunnel': 'custom', 'allowed_ips': '10.99.0.0/24', 'endpoint': 'fixed.example:51820',
+        'keepalive': 9, 'client_keepalive': 17, 'note': 'site'}}
+    plan = client.post('/api/plan', json=body).json()
+    result = client.post('/api/apply', json={**body, 'revision': plan['revision']})
+    assert result.status_code == 200
+    peer = client.get('/api/peers/custom').json()
+    assert peer['client_allowed_ips'] == ['10.99.0.0/24']
+    assert peer['configured_endpoint'] == 'fixed.example:51820'
+    assert peer['keepalive'] == 9 and peer['client_keepalive'] == 17
+
+
+def test_state_poll_reads_cache_without_executing_agent(client, monkeypatch):
+    from app.api.deps import get_executor
+    client.get('/api/peers')
+    monkeypatch.setattr(get_executor(), 'run_agent', lambda args: (_ for _ in ()).throw(AssertionError('remote IO')))
+    assert client.get('/api/state').status_code == 200
+    assert client.get('/api/traffic?window=60').status_code == 200
+
+
+def test_rename_preserves_public_key_and_edit_parameters(client):
+    old = client.get('/api/peers/laptop').json()['pubkey']
+    assert client.patch('/api/peers/laptop', json={'new_name': 'renamed', 'enabled': False,
+           'endpoint': 'static.example:51820', 'client_keepalive': 11, 'keepalive': 0}).status_code == 200
+    row = client.get('/api/peers/renamed').json()
+    assert row['pubkey'] == old and row['disabled'] is True
+    assert row['client_keepalive'] == 11 and row['configured_endpoint'] == 'static.example:51820'
+
+
+def test_api_token_only_get_whitelist_and_safe_responses(client):
+    from app.config import settings
+    settings.api_token = 'read-only'
+    reader = TestClient(client.app)
+    headers = {'X-API-Token': 'read-only'}
+    for route in ['/api/settings', '/api/status', '/api/doctor', '/api/peers/laptop', '/api/peers/laptop/qr']:
+        assert reader.get(route, headers=headers).status_code == 401
+    for route in ['/api/state', '/api/peers', '/api/server', '/api/plan', '/api/traffic']:
+        response = reader.get(route, headers=headers)
+        assert response.status_code == 200
+        assert 'PrivateKey' not in response.text and 'PresharedKey' not in response.text
+
+
+def test_readonly_apply_rejected_and_configuration_validation(client):
+    from app.config import settings
+    request = {'operation': 'add_peer', 'name': 'blocked', 'params': {}}
+    plan = client.post('/api/plan', json=request).json()
+    settings.read_only = True
+    assert client.post('/api/apply', json={**request, 'revision': plan['revision']}).status_code == 423
+
+
+def test_old_saved_driver_cannot_override_startup_mode(client):
+    from app.main import create_app
+    from app.config import settings
+    client.app.state.store.put_settings({'driver': 'local'})
+    create_app()
+    assert settings.driver == 'mock'
+
+
+def test_state_cache_ignores_old_node_after_connection_change(client):
+    from app.config import settings
+    from app.api.deps import reset_executor
+    client.get('/api/peers')
+    settings.driver = 'ssh'
+    settings.ssh_host = 'different-node'
+    reset_executor()
+    state = client.get('/api/state').json()
+    assert state['peers'] == [] and state['connected'] is False
+    assert 'different-node' in state['driver']['target']
+
+
+def test_mock_atomic_combined_toggle_rename_failure(client):
+    original = client.get('/api/peers/laptop').json()
+    response = client.patch('/api/peers/laptop', json={'new_name': 'phone', 'enabled': False})
+    assert response.status_code == 400
+    current = client.get('/api/peers/laptop').json()
+    assert current['pubkey'] == original['pubkey'] and current['enabled'] == original['enabled']
+
+
+def test_adoption_requires_preview_revision_and_rejects_expired(client):
+    assert client.post('/api/adopt?confirm=true').status_code == 428
+    preview = client.get('/api/adopt-preview')
+    assert preview.status_code == 200 and preview.json()['revision']
+    revision = preview.json()['revision']
+    client.patch('/api/peers/laptop', json={'note': 'new'})
+    assert client.post('/api/adopt', params={'confirm': True, 'revision': revision}).status_code == 409
+    revision = client.get('/api/adopt-preview').json()['revision']
+    assert client.post('/api/adopt', params={'confirm': True, 'revision': revision}).status_code == 200
+
+
+def test_token_state_excludes_driver_paths_and_configuration_errors(client):
+    from app.config import settings
+    settings.api_token = 'read-only'
+    settings.secret_key = ''
+    reader = TestClient(client.app)
+    response = reader.get('/api/state', headers={'X-API-Token': 'read-only'})
+    assert response.status_code == 200
+    assert set(response.json()['driver']) == {'driver', 'iface'}
+    assert 'WGP_SECRET_KEY' not in response.text
+    assert '/config' not in response.text

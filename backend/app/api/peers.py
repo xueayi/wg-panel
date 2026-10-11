@@ -7,17 +7,18 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from ..config import settings
 from ..drivers.base import ExecutorError
-from .deps import agent_call, current_user, get_executor
+from .deps import agent_call, current_reader, current_user, get_executor
 
 router = APIRouter(prefix="/api/peers", tags=["peers"])
 
 
 class PeerCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=32)
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
     tunnel: str = Field(default="lan", pattern="^(lan|full|custom)$")
     ip: Optional[str] = None
     allowed_ips: Optional[str] = None
@@ -25,16 +26,25 @@ class PeerCreate(BaseModel):
     net: Optional[str] = None              # 从哪个虚拟网段分配地址（多网段时用）
     dns: Optional[str] = None
     mtu: Optional[int] = None
+    endpoint: Optional[str] = None
+    advertised_endpoint: Optional[str] = None
+    keepalive: Optional[int] = Field(default=None, ge=0, le=65535)
+    client_keepalive: int = Field(default=25, ge=0, le=65535)
     note: str = ""
 
 
 class PeerUpdate(BaseModel):
-    tunnel: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+    new_name: Optional[str] = Field(default=None, min_length=1, max_length=32, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
+    tunnel: Optional[str] = Field(default=None, pattern="^(lan|full|custom)$")
     allowed_ips: Optional[str] = None
     site_routes: Optional[str] = None
     ip: Optional[str] = None
     note: Optional[str] = None
     enabled: Optional[bool] = None
+    endpoint: Optional[str] = None
+    keepalive: Optional[int] = Field(default=None, ge=0, le=65535)
+    client_keepalive: Optional[int] = Field(default=None, ge=0, le=65535)
 
 
 def _store(request: Request):
@@ -42,9 +52,16 @@ def _store(request: Request):
 
 
 @router.get("")
-def list_peers(request: Request, _: str = Depends(current_user)):
-    data = agent_call(get_executor(), ["list"], store=_store(request))
-    rows = data.get("rows", [])
+def list_peers(request: Request, _: str = Depends(current_reader)):
+    data = request.app.state.state_cache.refresh(get_executor())
+    if not data.get("connected"):
+        raise HTTPException(status_code=400, detail=data.get("error", "读取客户端失败"))
+    rows = data.get("peers", [])
+    rates = {r.get("public_key"): r for r in request.app.state.traffic_sampler.snapshot().get("peers", [])}
+    for row in rows:
+        rate = rates.get(row.get("pubkey"), {})
+        row["rx_rate"] = rate.get("rx_rate")
+        row["tx_rate"] = rate.get("tx_rate")
     return {
         "rows": rows,
         "total": len(rows),
@@ -68,12 +85,20 @@ def create_peer(body: PeerCreate, request: Request, _: str = Depends(current_use
         args += ["--dns", body.dns]
     if body.mtu:
         args += ["--mtu", str(body.mtu)]
+    if body.endpoint:
+        args += ["--peer-endpoint", body.endpoint]
+    if body.advertised_endpoint:
+        args += ["--endpoint", body.advertised_endpoint]
+    if body.keepalive is not None:
+        args += ["--peer-keepalive", str(body.keepalive)]
+    args += ["--client-keepalive", str(body.client_keepalive)]
     if body.note:
         args += ["--note", body.note]
     out = agent_call(get_executor(), args, action="peer.add", target=body.name,
                      store=_store(request))
     _store(request).audit("peer.add", body.name, "ok",
                           f"ip={out.get('ip')} tunnel={body.tunnel}")
+    request.app.state.state_cache.refresh(get_executor())
     return out
 
 
@@ -95,16 +120,21 @@ def update_peer(name: str, body: PeerUpdate, request: Request, _: str = Depends(
         args += ["--ip", body.ip]
     if body.note is not None:
         args += ["--note", body.note]
-    if body.enabled is False:
-        agent_call(get_executor(), ["disable", name], action="peer.disable", target=name,
-                   store=_store(request))
-    elif body.enabled is True:
-        agent_call(get_executor(), ["enable", name], action="peer.enable", target=name,
-                   store=_store(request))
+    if body.new_name:
+        args += ["--new-name", body.new_name]
+    if body.endpoint is not None:
+        args += ["--peer-endpoint", body.endpoint]
+    if body.keepalive is not None:
+        args += ["--peer-keepalive", str(body.keepalive)]
+    if body.client_keepalive is not None:
+        args += ["--client-keepalive", str(body.client_keepalive)]
+    if body.enabled is not None:
+        args += ["--enabled", str(body.enabled).lower()]
     if len(args) > 2:
         out = agent_call(get_executor(), args, action="peer.update", target=name,
                          store=_store(request))
         _store(request).audit("peer.update", name, "ok", " ".join(args[2:]))
+        request.app.state.state_cache.refresh(get_executor())
         return out
     return {"name": name, "enabled": body.enabled}
 
@@ -117,6 +147,7 @@ def delete_peer(name: str, request: Request, confirm: bool = Query(False),
     out = agent_call(get_executor(), ["remove", name, "--yes"], action="peer.remove",
                      target=name, confirmed=True, store=_store(request))
     _store(request).audit("peer.remove", name, "ok", f"ip={out.get('ip')}")
+    request.app.state.state_cache.refresh(get_executor())
     return out
 
 

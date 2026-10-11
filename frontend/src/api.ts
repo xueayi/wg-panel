@@ -49,6 +49,13 @@ export interface Peer {
   handshake_human: string
   rx: number
   tx: number
+  rx_rate?: number | null
+  tx_rate?: number | null
+  configured_endpoint?: string
+  keepalive?: number
+  client_keepalive?: number
+  exportable?: boolean
+  export_reason?: string
   client_allowed_ips?: string[]
   site_routes?: string[]
   conf_text?: string
@@ -106,7 +113,7 @@ export interface DoctorResult {
 }
 
 export interface ConnSettings {
-  driver: string
+  driver: 'ssh' | 'local' | 'mock' | string
   read_only: boolean
   iface: string
   ssh_host: string
@@ -115,6 +122,8 @@ export interface ConnSettings {
   ssh_remote_tool: string
   agent_path: string
   ssh_auth: 'key' | 'password'
+  local_wg_dir: string
+  local_state_dir: string
   password: { path: string; set: boolean; managed: boolean }
   key: {
     path: string
@@ -135,6 +144,21 @@ export interface Status {
   driver: { driver: string; target: string; read_only: boolean }
 }
 
+export interface TrafficSeries {
+  window: number
+  scope: string
+  step: number
+  points: [number, number | null, number | null][]
+}
+
+export interface PanelState {
+  peers: Peer[]
+  stats: { total: number; online: number; disabled: number }
+  traffic: { rx: number; tx: number; rx_rate: number | null; tx_rate: number | null; connected?: boolean }
+  connected?: boolean
+  driver?: Status['driver']
+}
+
 export const api = {
   health: () => req<{ ok: boolean; driver: string; read_only: boolean }>('/health'),
   login: (username: string, password: string) =>
@@ -142,6 +166,10 @@ export const api = {
   logout: () => req<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 
   status: () => req<Status>('/status'),
+  traffic: (window = 3600, scope = 'all') =>
+    req<TrafficSeries>(`/traffic?window=${window}&scope=${encodeURIComponent(scope)}`),
+  state: () => req<PanelState>('/state'),
+  plan: () => req<Record<string, unknown>>('/plan'),
   server: () => req<ServerInfo>('/server'),
   patchServer: (body: Record<string, unknown>) =>
     req<Record<string, unknown>>('/server', { method: 'PATCH', body: JSON.stringify(body) }),
@@ -160,7 +188,7 @@ export const api = {
   deleteBackup: (name: string) =>
     req<Record<string, unknown>>(`/backups/${encodeURIComponent(name)}?confirm=true`, { method: 'DELETE' }),
   resignPeer: (name: string) =>
-    req<Record<string, unknown>>(`/peers/${name}/resign`, { method: 'POST' }),
+    req<Record<string, unknown>>(`/peers/${encodeURIComponent(name)}/resign`, { method: 'POST' }),
 
   connSettings: () => req<ConnSettings>('/settings'),
   patchConnSettings: (body: Record<string, unknown>) =>
@@ -190,23 +218,24 @@ export const api = {
       '/sync-site-routes?confirm=true', { method: 'POST' }),
 
   peers: () => req<{ rows: Peer[]; total: number; online: number; disabled: number }>('/peers'),
-  peer: (name: string) => req<Peer>(`/peers/${name}`),
+  peer: (name: string) => req<Peer>(`/peers/${encodeURIComponent(name)}`),
   createPeer: (body: Record<string, unknown>) =>
     req<Peer>('/peers', { method: 'POST', body: JSON.stringify(body) }),
   updatePeer: (name: string, body: Record<string, unknown>) =>
-    req<Record<string, unknown>>(`/peers/${name}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  deletePeer: (name: string) => req<Record<string, unknown>>(`/peers/${name}?confirm=true`, { method: 'DELETE' }),
+    req<Record<string, unknown>>(`/peers/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deletePeer: (name: string) => req<Record<string, unknown>>(`/peers/${encodeURIComponent(name)}?confirm=true`, { method: 'DELETE' }),
 
-  configUrl: (name: string, reveal = false) => `/api/peers/${name}/config${reveal ? '?reveal=true' : ''}`,
-  qrUrl: (name: string) => `/api/peers/${name}/qr`,
+  configUrl: (name: string, reveal = false) => `/api/peers/${encodeURIComponent(name)}/config${reveal ? '?reveal=true' : ''}`,
+  qrUrl: (name: string) => `/api/peers/${encodeURIComponent(name)}/qr`,
 
   backups: async (): Promise<Backup[]> => {
     const d = await req<Backup[] | { data: Backup[] }>('/backups')
     // 契约是数组；万一后端回包了一层，也不能让页面崩
     return Array.isArray(d) ? d : (d?.data ?? [])
   },
-  restore: (name: string) => req<Record<string, unknown>>(`/backups/${name}/restore?confirm=true`, { method: 'POST' }),
-  adopt: () => req<Record<string, unknown>>('/adopt?confirm=true', { method: 'POST' }),
+  restore: (name: string) => req<Record<string, unknown>>(`/backups/${encodeURIComponent(name)}/restore?confirm=true`, { method: 'POST' }),
+  adoptPreview: () => req<AdoptPreview>('/adopt-preview'),
+  adopt: (revision: string) => req<Record<string, unknown>>(`/adopt?confirm=true&revision=${encodeURIComponent(revision)}`, { method: 'POST' }),
   refresh: () => req<Record<string, unknown>>('/connect/refresh', { method: 'POST' }),
   audit: (limit = 100) => req<{ rows: AuditRow[] }>(`/audit?limit=${limit}`),
 }
@@ -220,4 +249,25 @@ export function humanBytes(n: number): string {
     i++
   }
   return `${i === 0 ? v : v.toFixed(1)}${units[i]}`
+}
+
+export interface AdoptPreview {
+  adopted: number
+  revision: string
+  clients: { name: string; public_key: string; exportable: boolean }[]
+  warnings: string[]
+}
+
+export async function confirmAdoption(ask: (message: string) => boolean = (message) => window.confirm(message)): Promise<boolean> {
+  const preview = await api.adoptPreview()
+  const clients = preview.clients.map((client) => `${client.name}：${client.exportable ? '可导出客户端配置' : '缺少私钥，只能管理，无法导出'}`)
+  const message = [
+    `接管预览：${preview.adopted ?? preview.clients.length} 个客户端`,
+    ...clients,
+    ...(preview.warnings.length ? ['注意：', ...preview.warnings] : []),
+    '确认后会自动备份，并将已有配置纳入面板登记表。继续？',
+  ].join('\n\n')
+  if (!ask(message)) return false
+  await api.adopt(preview.revision)
+  return true
 }

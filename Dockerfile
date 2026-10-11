@@ -18,7 +18,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # openssh-client 只是排障备用；面板走 paramiko，不依赖它
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client \
+    && apt-get install -y --no-install-recommends openssh-client wireguard-tools iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

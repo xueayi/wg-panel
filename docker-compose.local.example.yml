@@ -1,0 +1,53 @@
+# Docker 本地管理模式：面板与 linuxserver/wireguard 共享 network namespace。
+# SSH 远程模式请继续使用 docker-compose.example.yml。
+name: wg-panel-local
+
+services:
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wg-panel-wireguard
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+    environment:
+      PUID: "0"
+      PGID: "0"
+      TZ: Asia/Shanghai
+      SERVERURL: auto
+      SERVERPORT: "51820"
+      PEERS: "1"
+      PEERDNS: auto
+      INTERNAL_SUBNET: 10.13.13.0
+      ALLOWEDIPS: 0.0.0.0/0, ::/0
+    volumes:
+      - ./config:/config
+      - /lib/modules:/lib/modules:ro
+    ports:
+      - "51820:51820/udp"
+      - "13010:8000"
+    restart: unless-stopped
+
+  wg-panel:
+    build: .
+    container_name: wg-panel-local
+    network_mode: service:wireguard
+    user: "0:0"
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ./config:/config
+      - ./data:/data
+    environment:
+      WGP_DRIVER: local
+      WGP_IFACE: wg0
+      WGP_LOCAL_CONFIG_DIR: /config/wg_confs
+      WGP_LOCAL_STATE_DIR: /config/.wg-panel
+      WGP_DATA_DIR: /data
+      WGP_ADMIN_PASSWORD: __ADMIN_PASSWORD__
+      WGP_SECRET_KEY: __SECRET_KEY__
+      WGP_TRAFFIC_INTERVAL: "1"
+    depends_on:
+      - wireguard
+    restart: unless-stopped

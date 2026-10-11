@@ -47,6 +47,7 @@ def _fingerprint(path: str) -> str:
 
 
 class ConnectionPatch(BaseModel):
+    driver: Optional[str] = Field(default=None, pattern="^(ssh|local|mock)$")
     ssh_host: Optional[str] = Field(default=None, max_length=255)
     ssh_port: Optional[int] = Field(default=None, ge=1, le=65535)
     ssh_user: Optional[str] = Field(default=None, max_length=64)
@@ -55,6 +56,8 @@ class ConnectionPatch(BaseModel):
     iface: Optional[str] = Field(default=None, max_length=32)
     read_only: Optional[bool] = None
     ssh_auth: Optional[str] = Field(default=None, pattern="^(key|password)$")
+    local_wg_dir: Optional[str] = Field(default=None, max_length=512)
+    local_state_dir: Optional[str] = Field(default=None, max_length=512)
 
 
 class KeyUpload(BaseModel):
@@ -79,6 +82,8 @@ def get_settings(request: Request, _: str = Depends(current_user)):
         "ssh_remote_tool": settings.ssh_remote_tool,
         "agent_path": settings.agent_path,
         "ssh_auth": getattr(settings, "ssh_auth", "key"),
+        "local_wg_dir": str(getattr(settings, "local_wg_dir", "")),
+        "local_state_dir": str(getattr(settings, "local_state_dir", "")),
         "password": {
             "path": pw_path,
             "set": bool(pw_path and Path(pw_path).exists()),
@@ -101,6 +106,8 @@ def patch_settings(body: ConnectionPatch, request: Request, _: str = Depends(cur
     data = {k: v for k, v in body.model_dump().items() if v is not None}
     if not data:
         return {"changed": False}
+    if "driver" in data:
+        raise HTTPException(status_code=422, detail="驱动由 WGP_DRIVER 启动配置决定，请重建容器切换模式")
     if "ssh_host" in data:
         data["ssh_host"] = data["ssh_host"].strip()
     _store(request).put_settings(data)

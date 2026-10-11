@@ -40,8 +40,8 @@ export default function Peers({ onToast, nonce }: { onToast: (m: string, tone?: 
 
   const load = async () => {
     try {
-      const data = await api.peers()
-      setRows(data.rows)
+      const data = await api.state()
+      setRows(data.peers)
     } catch (e) {
       onToast((e as Error).message, 'err')
     } finally {
@@ -51,6 +51,13 @@ export default function Peers({ onToast, nonce }: { onToast: (m: string, tone?: 
 
   useEffect(() => {
     load()
+    const refresh = () => { if (document.visibilityState === 'visible') load() }
+    const timer = window.setInterval(refresh, 5000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refresh)
+    }
   }, [])
 
   // 顶栏全局刷新：nonce 变化时重新拉列表（挂载时的 0 不触发）
@@ -125,8 +132,8 @@ export default function Peers({ onToast, nonce }: { onToast: (m: string, tone?: 
                   <th className="px-5 py-2.5 font-medium">隧道</th>
                   <th className="px-5 py-2.5 font-medium">网关网段</th>
                   <th className="px-5 py-2.5 font-medium">最近握手</th>
-                  <th className="px-5 py-2.5 text-right font-medium">↓ 接收</th>
-                  <th className="px-5 py-2.5 text-right font-medium">↑ 发送</th>
+                  <th className="px-5 py-2.5 text-right font-medium">↑ 上传</th>
+                  <th className="px-5 py-2.5 text-right font-medium">↓ 下载</th>
                   <th className="px-5 py-2.5 text-right font-medium">操作</th>
                 </tr>
               </thead>
@@ -162,8 +169,12 @@ export default function Peers({ onToast, nonce }: { onToast: (m: string, tone?: 
                     <td className="px-5 py-3 text-slate-500">
                       {p.disabled ? <Badge tone="amber">已停用</Badge> : p.handshake_human}
                     </td>
-                    <td className="px-5 py-3 text-right font-mono text-[12px] text-slate-500">{humanBytes(p.rx)}</td>
-                    <td className="px-5 py-3 text-right font-mono text-[12px] text-slate-500">{humanBytes(p.tx)}</td>
+                    <td className="px-5 py-3 text-right font-mono text-[12px] text-slate-500">
+                      {humanBytes(p.rx)}<div className="text-[11px] text-slate-400">{p.rx_rate == null ? '—' : `${humanBytes(p.rx_rate)}/s`}</div>
+                    </td>
+                    <td className="px-5 py-3 text-right font-mono text-[12px] text-slate-500">
+                      {humanBytes(p.tx)}<div className="text-[11px] text-slate-400">{p.tx_rate == null ? '—' : `${humanBytes(p.tx_rate)}/s`}</div>
+                    </td>
                     <td className="px-5 py-3">
                       <div className="flex justify-end gap-1.5">
                         <Button size="sm" onClick={() => setDetail(p)}>
@@ -195,8 +206,8 @@ export default function Peers({ onToast, nonce }: { onToast: (m: string, tone?: 
         }}
         onToast={onToast}
       />
-      {detail && <ConfigModal peer={detail} onClose={() => setDetail(null)} onToast={onToast} />}
-      {fresh && <ConfigModal peer={fresh} fresh onClose={() => setFresh(null)} onToast={onToast} />}
+      {detail && <ConfigModal peer={detail} onClose={() => setDetail(null)} onSaved={load} onToast={onToast} />}
+      {fresh && <ConfigModal peer={fresh} fresh onClose={() => setFresh(null)} onSaved={load} onToast={onToast} />}
     </div>
   )
 }
@@ -423,25 +434,62 @@ function CreateModal({
   )
 }
 
-function ConfigModal({
+export function ConfigModal({
   peer,
   fresh = false,
   onClose,
+  onSaved,
   onToast,
 }: {
   peer: Peer
   fresh?: boolean
   onClose: () => void
+  onSaved: () => void
   onToast: (m: string, tone?: 'ok' | 'err') => void
 }) {
   const [text, setText] = useState('')
+  const [name, setName] = useState(peer.name)
+  const [endpoint, setEndpoint] = useState(peer.configured_endpoint || '')
+  const [keepalive, setKeepalive] = useState(String(peer.keepalive ?? 0))
+  const [clientKeepalive, setClientKeepalive] = useState(String(peer.client_keepalive ?? 25))
+  const [original, setOriginal] = useState(peer)
+  const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     api
       .peer(peer.name)
-      .then((p) => setText(p.conf_text || ''))
-      .catch(() => setText(''))
+      .then((p) => {
+        setText(p.conf_text || '')
+        setOriginal(p)
+        setName(p.name)
+        setEndpoint(p.configured_endpoint || '')
+        setKeepalive(String(p.keepalive ?? 0))
+        setClientKeepalive(String(p.client_keepalive ?? 25))
+        setLoaded(true)
+      })
+      .catch((e) => setLoadError((e as Error).message))
   }, [peer.name])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const changes = peerEditChanges(original, { name, endpoint, keepalive, clientKeepalive })
+      if (!Object.keys(changes).length) {
+        onToast('没有改动')
+        return
+      }
+      await api.updatePeer(peer.name, changes)
+      onToast('客户端设置已保存，配置已重新生成')
+      onSaved()
+      onClose()
+    } catch (e) {
+      onToast((e as Error).message, 'err')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const copy = async () => {
     try {
@@ -460,9 +508,13 @@ function ConfigModal({
       footer={
         <>
           <Button onClick={onClose}>关闭</Button>
-          <a href={api.configUrl(peer.name)} download>
-            <Button variant="primary">下载 .conf（含私钥）</Button>
-          </a>
+          {original.exportable === false ? (
+            <Button variant="primary" disabled>无法导出配置</Button>
+          ) : (
+            <a href={api.configUrl(peer.name, true)} download>
+              <Button variant="primary">下载 .conf（含私钥）</Button>
+            </a>
+          )}
         </>
       }
     >
@@ -473,15 +525,21 @@ function ConfigModal({
             ，用手机扫下面的二维码即可导入。
           </div>
         )}
+        {original.exportable === false && (
+          <div className="rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-700">
+            {original.export_reason || '缺少客户端私钥，无法导出配置或二维码；仍可管理这个客户端。'}
+          </div>
+        )}
+        {loadError && <div role="alert" className="text-[13px] text-red-600">{loadError}</div>}
         <div className="flex gap-4">
-          <div className="shrink-0">
+          {original.exportable !== false && <div className="shrink-0">
             <img
               src={api.qrUrl(peer.name)}
               alt="配置二维码"
               className="h-36 w-36 rounded-lg border border-slate-200 bg-white p-1"
             />
             <div className="mt-1.5 text-center text-[12px] text-slate-400">手机扫码导入</div>
-          </div>
+          </div>}
           <div className="min-w-0 flex-1">
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-[13px] font-medium text-slate-700">配置内容</span>
@@ -490,12 +548,26 @@ function ConfigModal({
               </Button>
             </div>
             <pre className="max-h-36 overflow-auto rounded-lg bg-slate-900 p-3 font-mono text-[11px] leading-relaxed text-slate-100">
-              {text || '载入中…'}
+              {text || (loaded ? '无可导出的客户端配置' : loadError ? '配置读取失败' : '载入中…')}
             </pre>
             <p className="mt-2 text-[12px] leading-relaxed text-slate-400">
               这里显示的私钥是打码的。下载按钮给出的是可直接导入的明文版。
             </p>
           </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3">
+          <Field label="客户端名称">
+            <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="服务端 peer Endpoint" hint="服务端主动拨号时填写；普通客户端通常留空">
+            <input className={inputClass} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="198.51.100.9:51820" />
+          </Field>
+          <Field label="服务端 Keepalive（秒）">
+            <input className={inputClass} value={keepalive} onChange={(e) => setKeepalive(e.target.value)} placeholder="留空" />
+          </Field>
+          <Field label="客户端 Keepalive（秒）">
+            <input className={inputClass} value={clientKeepalive} onChange={(e) => setClientKeepalive(e.target.value)} />
+          </Field>
         </div>
         <div className="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3 text-[13px]">
           <div>
@@ -507,7 +579,30 @@ function ConfigModal({
             <div className="text-slate-700">{TUNNEL_LABEL[peer.tunnel] || peer.tunnel || '—'}</div>
           </div>
         </div>
+        <div className="flex justify-end">
+          <Button variant="primary" disabled={saving || !loaded} onClick={save}>
+            {saving ? '保存中…' : '保存客户端设置'}
+          </Button>
+        </div>
       </div>
     </Modal>
   )
+}
+
+export function peerEditChanges(peer: Peer, form: { name: string; endpoint: string; keepalive: string; clientKeepalive: string }): Record<string, unknown> {
+  const changes: Record<string, unknown> = {}
+  const name = form.name.trim()
+  if (!name) throw new Error('客户端名称不能为空')
+  if (name !== peer.name) changes.new_name = name
+  const endpoint = form.endpoint.trim()
+  if (endpoint !== (peer.configured_endpoint || '')) changes.endpoint = endpoint
+  for (const [field, value, previous] of [
+    ['keepalive', form.keepalive, peer.keepalive ?? 0],
+    ['client_keepalive', form.clientKeepalive, peer.client_keepalive ?? 25],
+  ] as const) {
+    const number = Number(value.trim() || '0')
+    if (!Number.isInteger(number) || number < 0 || number > 65535) throw new Error('Keepalive 必须是 0 到 65535 的整数秒，0 表示关闭')
+    if (number !== previous) changes[field] = number
+  }
+  return changes
 }
