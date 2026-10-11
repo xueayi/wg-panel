@@ -39,6 +39,16 @@ docker compose up -d
 | 站点互联 | 给网关节点填「网关网段」，一键把所有站点网段并入客户端配置 |
 | 安全网 | 每次写配置前自动备份（可回滚、可删单份）、一键体检（能修的直接修）、操作审计 |
 
+## 界面
+
+| 概览 | 客户端 |
+|---|---|
+| [![概览](docs/screenshots/dashboard.png)](docs/screenshots/dashboard.png) | [![客户端](docs/screenshots/peers.png)](docs/screenshots/peers.png) |
+
+| 中转节点 & IP | 备份 & 审计 |
+|---|---|
+| [![中转节点](docs/screenshots/server.png)](docs/screenshots/server.png) | [![备份审计](docs/screenshots/system.png)](docs/screenshots/system.png) |
+
 ## 文档
 
 - **[从零开始接入你的中转节点](docs/guide/getting-started.md)** —— 中转节点准备 → 部署 → 纳管 → 扫码导入 → 站点互联
