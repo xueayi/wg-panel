@@ -11,8 +11,13 @@
 
 </div>
 
-跑在 Docker 里，通过 SSH 纳管你的 WireGuard 中转节点，把「配节点、分虚拟 IP、发客户端配置」
+跑在 Docker 里，管理你的 WireGuard 中转节点，把「配节点、分虚拟 IP、发客户端配置」
 做成界面。**面板不承载任何流量**——隧道始终是 客户端 ↔ 中转节点，它只是遥控器。
+
+支持两种模式：
+
+- **SSH 模式**（默认）：面板部署在哪都行，通过 SSH 远程纳管中转节点上的 WireGuard
+- **本地模式**：面板与 linuxserver/wireguard 容器共享同一网络空间，直接管理本机接口，不需要 SSH
 
 ## 快速开始
 
@@ -28,6 +33,21 @@ docker compose up -d
 节点相关的一切都在面板里配，不用改 compose、也不用在部署机上放私钥。
 
 > 忘了密码？改过初始密码后顶栏会一直提醒；重置方法见教程。
+
+### 本地模式（可选）
+
+面板和 WireGuard 跑在同一台机器、不想经过 SSH 时，用本地模式：
+
+```bash
+cp docker-compose.local.example.yml docker-compose.yml
+# 同样只改 WGP_ADMIN_PASSWORD 与 WGP_SECRET_KEY
+docker compose up -d
+```
+
+- 面板通过 `network_mode: service:wireguard` 加入 linuxserver/wireguard 容器的网络空间，直接执行 `wg` / `ip` 管理接口，无需任何 SSH 凭证
+- 首次打开面板 →「系统」页 → **纳管**：先预览（识别已有 peer，只读），确认后接管；之后的增删改全部在界面完成
+- 配置存放在 `./config/`（两容器共享），面板数据在 `./data/`；端口映射写在 wireguard 服务上（默认 `13010`），已占用就换个宿主机端口
+- 驱动由 `WGP_DRIVER` 在**启动时固定**，两种模式不能热切换；换模式需重建容器（面板和 WireGuard 要一起重建以重新加入网络空间）
 
 ## 功能
 
@@ -71,7 +91,7 @@ docker compose up -d
 | `WGP_DRIVER` | `ssh`（默认）、`local`（Docker 同网络空间）或 `mock`（开发） |
 | `WGP_API_TOKEN` | 可选只读 API token，支持 `X-API-Token` 或 Bearer |
 
-需要直接管理同一 Docker 中的 WireGuard 时，复制 `docker-compose.local.example.yml`；
+需要直接管理同一 Docker 中的 WireGuard 时，复制 `docker-compose.local.example.yml`（详见上文「本地模式」）；
 面板和 WireGuard 必须一起重建以重新加入网络空间。
 
 只读 API 示例：
