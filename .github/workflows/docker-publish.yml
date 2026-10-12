@@ -6,6 +6,11 @@
 #
 # 触发：推送 v* tag（打版本标签 + latest）、手动 workflow_dispatch。
 # 普通 push 到 main 不再触发构建。
+#
+# 执行范围：仅 GitHub 镜像仓库（github.com/xueayi/wg-panel）。
+# 自建 Gitea 源仓库已在仓库设置中关闭 Actions；
+# 下面的 job 级 if 条件作为第二层保护：即使 Gitea Actions 将来被重新启用，
+# 构建任务也会因 github.server_url 不是 github.com 而跳过。
 name: docker-publish
 
 on:
@@ -19,6 +24,8 @@ concurrency:
 
 jobs:
   build-push:
+    # 仅在 GitHub 上执行（Gitea 源仓库不执行自动化，见文件头说明）
+    if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
